@@ -9,6 +9,7 @@ export default defineConfig({
     tailwindcss(),
     react(),
     babel({ presets: [reactCompilerPreset()] })
-  ],
+    ],
+    base: '/Thought_Flow/',
 })
 

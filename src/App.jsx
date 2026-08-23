@@ -18,6 +18,27 @@ import {
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import './App.css';
+import { BASE_WORKSPACE_PADDING, MAX_WORKSPACE_PADDING, SAFETY_MARGIN } from './constants/workspace';
+import { 
+  cloneMindMapState, getChildLogicalSide, getChildrenByDirection, 
+  applyFormattedChildrenToTree, 
+  applyMultipleFormattedChildrenToTree, ensureNodePositions, 
+  addNodeInDirection, updateNodePositionInTree, deleteNodeFromTree, 
+  updateNodeInTree, findNodeById, isLeafNode, 
+  updateMultipleNodePositionsInTree, deleteMultipleNodesFromTree, 
+  updateMultipleNodesText, findParentNode, getMultiSelectionFormatGroups, 
+  getVisibleNodes, getVisibleConnections
+} from './utils/treeUtils';
+import { computeFormattedGroupPositions } from './utils/layoutUtils';
+import { formatFileSize, readClipboardAsFiles } from './utils/fileUtils';
+import { calculateConnectorPath } from './utils/geometryUtils';
+import RichTextEditor from './components/RichTextEditor';
+import NodePhotosManager from './components/NodePhotosManager';
+import FloatingMediaWindow from './components/FloatingMediaWindow';
+import PdfViewer from './components/PdfViewer';
+
+import FilePreviewModal from './components/FilePreviewModal';
+import MindMapNode from './components/MindMapNode';
 
 // Configure PDF.js Worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -25,2426 +46,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-
-// Helper to check if HTML / notes content contains actual text written by user
-const hasTextContent = (htmlOrText) => {
-  if (!htmlOrText || typeof htmlOrText !== 'string') return false;
-  const clean = htmlOrText
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#160;/g, ' ')
-    .trim();
-  return clean.length > 0;
-};
-
-// Helper to deeply snapshot exact mind-map state (hierarchy, coordinates, notes, photos, sketches, collapse state)
-const cloneMindMapState = (tree, collapsedSet) => {
-  if (!tree) return null;
-  return {
-    treeData: JSON.parse(JSON.stringify(tree)),
-    collapsedNodeIds: Array.from(collapsedSet || [])
-  };
-};
-
-// Helper to extract a node's logical side ('right' | 'left' | 'up' | 'down')
-const getChildLogicalSide = (child, fallbackIsRight = false) => {
-  if (!child) return 'down';
-  if (child.side) {
-    const s = String(child.side).toLowerCase();
-    if (s === 'right') return 'right';
-    if (s === 'left') return 'left';
-    if (s === 'up') return 'up';
-    if (s === 'down' || s === 'bottom') return 'down';
-  }
-  return fallbackIsRight ? 'right' : 'down';
-};
-
-// Helper to classify direct children of a parent into directional buckets based on persistent logical side
-const getChildrenByDirection = (parent) => {
-  if (!parent) return { right: [], left: [], up: [], down: [] };
-  const groups = { right: [], left: [], up: [], down: [] };
-
-  (parent.rightChildren || []).forEach(child => {
-    const side = getChildLogicalSide(child, true);
-    if (groups[side]) {
-      groups[side].push(child);
-    } else {
-      groups.right.push(child);
-    }
-  });
-
-  (parent.children || []).forEach(child => {
-    const side = getChildLogicalSide(child, false);
-    if (groups[side]) {
-      groups[side].push(child);
-    } else {
-      groups.down.push(child);
-    }
-  });
-
-  return groups;
-};
-
-// Helper to shift a node and all its descendants by (dx, dy)
-const shiftNodeAndDescendants = (node, dx, dy) => {
-  if (!node) return node;
-  const nextX = typeof node.x === 'number' ? Math.round(node.x + dx) : 650;
-  const nextY = typeof node.y === 'number' ? Math.round(node.y + dy) : 260;
-  return {
-    ...node,
-    x: nextX,
-    y: nextY,
-    children: (node.children || []).map(child => shiftNodeAndDescendants(child, dx, dy)),
-    rightChildren: (node.rightChildren || []).map(child => shiftNodeAndDescendants(child, dx, dy))
-  };
-};
-
-// Helper to apply updated child nodes to a parent inside the tree hierarchy
-const applyFormattedChildrenToTree = (root, parentId, updatedChildrenMap) => {
-  if (!root) return root;
-  if (root.id === parentId) {
-    const nextChildren = (root.children || []).map(c => updatedChildrenMap[c.id] || c);
-    const nextRightChildren = (root.rightChildren || []).map(c => updatedChildrenMap[c.id] || c);
-    return {
-      ...root,
-      children: nextChildren,
-      rightChildren: nextRightChildren
-    };
-  }
-  return {
-    ...root,
-    children: (root.children || []).map(c => applyFormattedChildrenToTree(c, parentId, updatedChildrenMap)),
-    rightChildren: (root.rightChildren || []).map(c => applyFormattedChildrenToTree(c, parentId, updatedChildrenMap))
-  };
-};
-
-// Helper to apply updated child nodes across one or multiple parents throughout the tree
-const applyMultipleFormattedChildrenToTree = (root, updatedChildrenMap) => {
-  if (!root || !updatedChildrenMap || Object.keys(updatedChildrenMap).length === 0) return root;
-
-  const nextChildren = (root.children || []).map(c => {
-    if (updatedChildrenMap[c.id]) {
-      return updatedChildrenMap[c.id];
-    }
-    return applyMultipleFormattedChildrenToTree(c, updatedChildrenMap);
-  });
-
-  const nextRightChildren = (root.rightChildren || []).map(c => {
-    if (updatedChildrenMap[c.id]) {
-      return updatedChildrenMap[c.id];
-    }
-    return applyMultipleFormattedChildrenToTree(c, updatedChildrenMap);
-  });
-
-  return {
-    ...root,
-    children: nextChildren,
-    rightChildren: nextRightChildren
-  };
-};
-
-// Helper to compute formatted layout positions for a specific set of children of a parent in a direction
-const computeFormattedGroupPositions = (currentParent, items, direction, layout, dimMap = {}) => {
-  if (!currentParent || !items || items.length < 2) return {};
-
-  const px = typeof currentParent.x === 'number' ? currentParent.x : 650;
-  const py = typeof currentParent.y === 'number' ? currentParent.y : 260;
-  const pWidth = dimMap[currentParent.id]?.width || 220;
-  const pHeight = dimMap[currentParent.id]?.height || 64;
-  const pCenterX = px + pWidth / 2;
-  const pCenterY = py + pHeight / 2;
-
-  const updatedChildrenMap = {};
-
-  if (layout === 'compact' && direction === 'down') {
-    // DOWN + COMPACT: TWO-HORIZONTAL-ROW GRID (preserves natural creation order)
-    const count = items.length;
-    const topRowCount = Math.ceil(count / 2);
-    const row1 = items.slice(0, topRowCount);
-    const row2 = items.slice(topRowCount);
-
-    const gapX = 20;
-    const gapY = 16;
-    const offsetFromParentY = 65;
-
-    // Calculate Row 1 total width and max height
-    let totalWidth1 = 0;
-    let maxHeight1 = 0;
-    row1.forEach((item, idx) => {
-      const w = dimMap[item.id]?.width || 200;
-      const h = dimMap[item.id]?.height || 56;
-      totalWidth1 += w;
-      if (h > maxHeight1) maxHeight1 = h;
-      if (idx > 0) totalWidth1 += gapX;
-    });
-
-    // Calculate Row 2 total width
-    let totalWidth2 = 0;
-    row2.forEach((item, idx) => {
-      const w = dimMap[item.id]?.width || 200;
-      totalWidth2 += w;
-      if (idx > 0) totalWidth2 += gapX;
-    });
-
-    // Position Row 1 (centered horizontally relative to parent pCenterX)
-    let currentX1 = Math.round(pCenterX - totalWidth1 / 2);
-    const targetY1 = Math.round(py + pHeight + offsetFromParentY);
-
-    row1.forEach(item => {
-      const w = dimMap[item.id]?.width || 200;
-      const oldX = item.x ?? 650;
-      const oldY = item.y ?? 260;
-      const newX = Math.round(currentX1);
-      const newY = targetY1;
-      const dx = newX - oldX;
-      const dy = newY - oldY;
-
-      updatedChildrenMap[item.id] = shiftNodeAndDescendants(item, dx, dy);
-      currentX1 += w + gapX;
-    });
-
-    // Position Row 2 (centered horizontally relative to parent pCenterX / underneath Row 1)
-    if (row2.length > 0) {
-      let currentX2 = Math.round(pCenterX - totalWidth2 / 2);
-      const targetY2 = targetY1 + maxHeight1 + gapY;
-
-      row2.forEach(item => {
-        const w = dimMap[item.id]?.width || 200;
-        const oldX = item.x ?? 650;
-        const oldY = item.y ?? 260;
-        const newX = Math.round(currentX2);
-        const newY = targetY2;
-        const dx = newX - oldX;
-        const dy = newY - oldY;
-
-        updatedChildrenMap[item.id] = shiftNodeAndDescendants(item, dx, dy);
-        currentX2 += w + gapX;
-      });
-    }
-  } else if (layout === 'compact') {
-    // Group into rows of 2 nodes (preserves natural creation order)
-    const rows = [];
-    for (let i = 0; i < items.length; i += 2) {
-      if (i + 1 < items.length) {
-        rows.push([items[i], items[i + 1]]);
-      } else {
-        rows.push([items[i]]);
-      }
-    }
-
-    const gapX = 24;
-    const gapY = 16;
-    const offsetFromParentX = 80;
-    const offsetFromParentY = 65;
-
-    let col0Width = 0;
-    let col1Width = 0;
-
-    rows.forEach(row => {
-      if (row.length === 2) {
-        const w0 = dimMap[row[0].id]?.width || 200;
-        const w1 = dimMap[row[1].id]?.width || 200;
-        if (w0 > col0Width) col0Width = w0;
-        if (w1 > col1Width) col1Width = w1;
-      } else {
-        const w = dimMap[row[0].id]?.width || 200;
-        if (col0Width === 0) col0Width = w;
-        if (col1Width === 0) col1Width = w;
-      }
-    });
-    if (col0Width === 0) col0Width = 200;
-    if (col1Width === 0) col1Width = 200;
-
-    const totalGroupWidth = col0Width + gapX + col1Width;
-    const rowHeights = rows.map(row => {
-      let maxH = 0;
-      row.forEach(item => {
-        const h = dimMap[item.id]?.height || 56;
-        if (h > maxH) maxH = h;
-      });
-      return maxH;
-    });
-
-    const totalGroupHeight = rowHeights.reduce((acc, h) => acc + h, 0) + (rows.length - 1) * gapY;
-
-    let groupStartX = 0;
-    let groupStartY = 0;
-
-    if (direction === 'right') {
-      groupStartX = Math.round(px + pWidth + offsetFromParentX);
-      groupStartY = Math.round(pCenterY - totalGroupHeight / 2);
-    } else if (direction === 'left') {
-      groupStartX = Math.round(px - offsetFromParentX - totalGroupWidth);
-      groupStartY = Math.round(pCenterY - totalGroupHeight / 2);
-    } else if (direction === 'up') {
-      groupStartX = Math.round(pCenterX - totalGroupWidth / 2);
-      groupStartY = Math.round(py - offsetFromParentY - totalGroupHeight);
-    }
-
-    let currY = groupStartY;
-    rows.forEach((row, rIdx) => {
-      const rowH = rowHeights[rIdx];
-      if (row.length === 2) {
-        const node0 = row[0];
-        const node1 = row[1];
-        const n0X = groupStartX;
-        const n0Y = currY;
-        const n1X = groupStartX + col0Width + gapX;
-        const n1Y = currY;
-
-        const dx0 = n0X - (node0.x ?? 650);
-        const dy0 = n0Y - (node0.y ?? 260);
-        const dx1 = n1X - (node1.x ?? 650);
-        const dy1 = n1Y - (node1.y ?? 260);
-
-        updatedChildrenMap[node0.id] = shiftNodeAndDescendants(node0, dx0, dy0);
-        updatedChildrenMap[node1.id] = shiftNodeAndDescendants(node1, dx1, dy1);
-      } else {
-        const node0 = row[0];
-        const nodeW = dimMap[node0.id]?.width || 200;
-        const n0X = Math.round(groupStartX + (totalGroupWidth - nodeW) / 2);
-        const n0Y = currY;
-        const dx0 = n0X - (node0.x ?? 650);
-        const dy0 = n0Y - (node0.y ?? 260);
-
-        updatedChildrenMap[node0.id] = shiftNodeAndDescendants(node0, dx0, dy0);
-      }
-      currY += rowH + gapY;
-    });
-  } else {
-    // List layout (preserves natural creation order)
-    if (direction === 'right' || direction === 'left') {
-      const gapY = 26;
-      const offsetFromParentX = 90;
-
-      let totalHeight = 0;
-      items.forEach((item, idx) => {
-        const h = dimMap[item.id]?.height || 56;
-        totalHeight += h;
-        if (idx > 0) totalHeight += gapY;
-      });
-
-      let currentY = Math.round(pCenterY - totalHeight / 2);
-
-      items.forEach(item => {
-        const w = dimMap[item.id]?.width || 200;
-        const h = dimMap[item.id]?.height || 56;
-        const oldX = item.x ?? 650;
-        const oldY = item.y ?? 260;
-
-        let newX;
-        if (direction === 'right') {
-          newX = Math.round(px + pWidth + offsetFromParentX);
-        } else {
-          newX = Math.round(px - offsetFromParentX - w);
-        }
-        const newY = Math.round(currentY);
-        const dx = newX - oldX;
-        const dy = newY - oldY;
-
-        updatedChildrenMap[item.id] = shiftNodeAndDescendants(item, dx, dy);
-        currentY += h + gapY;
-      });
-    } else if (direction === 'down' || direction === 'up') {
-      const gapX = 36;
-      const offsetFromParentY = 85;
-
-      let totalWidth = 0;
-      let maxHeight = 0;
-      items.forEach((item, idx) => {
-        const w = dimMap[item.id]?.width || 200;
-        const h = dimMap[item.id]?.height || 56;
-        totalWidth += w;
-        if (h > maxHeight) maxHeight = h;
-        if (idx > 0) totalWidth += gapX;
-      });
-
-      let currentX = Math.round(pCenterX - totalWidth / 2);
-      const targetY = direction === 'down'
-        ? Math.round(py + pHeight + offsetFromParentY)
-        : Math.round(py - maxHeight - offsetFromParentY);
-
-      items.forEach(item => {
-        const w = dimMap[item.id]?.width || 200;
-        const oldX = item.x ?? 650;
-        const oldY = item.y ?? 260;
-        const newX = Math.round(currentX);
-        const newY = targetY;
-        const dx = newX - oldX;
-        const dy = newY - oldY;
-
-        updatedChildrenMap[item.id] = shiftNodeAndDescendants(item, dx, dy);
-        currentX += w + gapX;
-      });
-    }
-  }
-
-  return updatedChildrenMap;
-};
-
-// Helper to format file size
-const formatFileSize = (bytes) => {
-  if (!bytes || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-};
-
-// Shared helper to read files (images/screenshots or text) from system clipboard
-const readClipboardAsFiles = async () => {
-  if (!navigator.clipboard) return null;
-  // 1. Try reading images/blobs first
-  if (navigator.clipboard.read) {
-    try {
-      const items = await navigator.clipboard.read();
-      const filesToImport = [];
-      for (const item of items) {
-        for (const type of item.types) {
-          if (type.startsWith('image/')) {
-            const blob = await item.getType(type);
-            const ext = type.split('/')[1] || 'png';
-            const fileObj = new File(
-              [blob], 
-              `Screenshot_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.${ext}`, 
-              { type }
-            );
-            filesToImport.push(fileObj);
-          }
-        }
-      }
-      if (filesToImport.length > 0) {
-        return filesToImport;
-      }
-    } catch {
-      // Fallback to text
-    }
-  }
-
-  // 2. Try reading plain text
-  if (navigator.clipboard.readText) {
-    const text = await navigator.clipboard.readText();
-    if (text && text.trim()) {
-      const cleanText = text.trim();
-      const firstLine = cleanText.split('\n')[0].replace(/[^\w\s-]/gi, '').trim().slice(0, 24);
-      const title = firstLine.length > 2 ? `${firstLine}.txt` : `Pasted_Note_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.txt`;
-      const blob = new Blob([cleanText], { type: 'text/plain;charset=utf-8' });
-      const fileObj = new File([blob], title, { type: 'text/plain' });
-      return [fileObj];
-    }
-  }
-  return null;
-};
-
-// Helper to ensure all nodes have valid canvas x/y positions with compact close branch distances
-const ensureNodePositions = (node, originX = 650, originY = 260, defaultSide = null) => {
-  if (!node) return null;
-  const currentX = typeof node.x === 'number' ? node.x : originX;
-  const currentY = typeof node.y === 'number' ? node.y : originY;
-  const side = node.side ? getChildLogicalSide(node) : (defaultSide || undefined);
-
-  const rightChildren = (node.rightChildren || []).map((child, idx) => {
-    const defaultY = currentY + ((idx % 3) * 14 - 14);
-    return ensureNodePositions(child, currentX + 180, defaultY, child.side ? getChildLogicalSide(child, true) : 'right');
-  });
-
-  const children = (node.children || []).map((child, idx) => {
-    const defaultX = currentX + ((idx % 3) * 16 - 16);
-    return ensureNodePositions(child, defaultX, currentY + 95, child.side ? getChildLogicalSide(child, false) : 'down');
-  });
-
-  return {
-    ...node,
-    side,
-    x: currentX,
-    y: currentY,
-    rightChildren,
-    children
-  };
-};
-
-// Helper to add a node in any logical direction ('right' | 'left' | 'up' | 'bottom'/'down')
-const addNodeInDirection = (root, targetNodeId, direction = 'bottom', newText = '') => {
-  if (!root) return { updatedTree: null, newNode: null };
-  let createdNode = null;
-  const normDir = (direction === 'right') ? 'right' :
-                  (direction === 'left') ? 'left' :
-                  (direction === 'up') ? 'up' : 'down';
-
-  const insert = (node) => {
-    if (node.id === targetNodeId) {
-      const parentX = typeof node.x === 'number' ? node.x : 650;
-      const parentY = typeof node.y === 'number' ? node.y : 260;
-
-      let newX = parentX;
-      let newY = parentY;
-
-      if (normDir === 'right') {
-        const existingRight = node.rightChildren || [];
-        const count = existingRight.length;
-        newX = parentX + 180;
-        newY = parentY + ((count % 3) * 14 - 14);
-        const newNode = {
-          id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          text: newText,
-          notes: '',
-          drawing: null,
-          images: [],
-          side: 'right',
-          x: newX,
-          y: newY,
-          rightChildren: [],
-          children: []
-        };
-        createdNode = newNode;
-        return { ...node, rightChildren: [...existingRight, newNode] };
-      } else if (normDir === 'left') {
-        const existingRight = node.rightChildren || [];
-        const count = existingRight.length;
-        newX = parentX - 180;
-        newY = parentY + ((count % 3) * 14 - 14);
-        const newNode = {
-          id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          text: newText,
-          notes: '',
-          drawing: null,
-          images: [],
-          side: 'left',
-          x: newX,
-          y: newY,
-          rightChildren: [],
-          children: []
-        };
-        createdNode = newNode;
-        return { ...node, rightChildren: [...existingRight, newNode] };
-      } else if (normDir === 'up') {
-        const existingBottom = node.children || [];
-        const count = existingBottom.length;
-        newX = parentX + ((count % 3) * 16 - 16);
-        newY = parentY - 95;
-        const newNode = {
-          id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          text: newText,
-          notes: '',
-          drawing: null,
-          images: [],
-          side: 'up',
-          x: newX,
-          y: newY,
-          rightChildren: [],
-          children: []
-        };
-        createdNode = newNode;
-        return { ...node, children: [...existingBottom, newNode] };
-      } else {
-        const existingBottom = node.children || [];
-        const count = existingBottom.length;
-        newX = parentX + ((count % 3) * 16 - 16);
-        newY = parentY + 95;
-        const newNode = {
-          id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          text: newText,
-          notes: '',
-          drawing: null,
-          images: [],
-          side: 'down',
-          x: newX,
-          y: newY,
-          rightChildren: [],
-          children: []
-        };
-        createdNode = newNode;
-        return { ...node, children: [...existingBottom, newNode] };
-      }
-    }
-    return {
-      ...node,
-      rightChildren: (node.rightChildren || []).map(insert),
-      children: (node.children || []).map(insert)
-    };
-  };
-
-  return {
-    updatedTree: insert(root),
-    newNode: createdNode
-  };
-};
-
-// Helper to update a single node's x/y position in the tree
-const updateNodePositionInTree = (root, targetNodeId, x, y) => {
-  if (!root) return null;
-  if (root.id === targetNodeId) {
-    return { ...root, x, y };
-  }
-  return {
-    ...root,
-    rightChildren: (root.rightChildren || []).map(c => updateNodePositionInTree(c, targetNodeId, x, y)),
-    children: (root.children || []).map(c => updateNodePositionInTree(c, targetNodeId, x, y))
-  };
-};
-
-// Helper to delete a node from the tree
-const deleteNodeFromTree = (root, idToDelete) => {
-  if (!root || root.id === idToDelete) return null;
-  const filterChildren = (node) => {
-    return {
-      ...node,
-      rightChildren: (node.rightChildren || [])
-        .filter(c => c.id !== idToDelete)
-        .map(filterChildren),
-      children: (node.children || [])
-        .filter(c => c.id !== idToDelete)
-        .map(filterChildren)
-    };
-  };
-  return filterChildren(root);
-};
-
-// Helper to update specific content of a node (notes, drawings, text)
-const updateNodeInTree = (node, nodeId, updates) => {
-  if (!node) return null;
-  if (node.id === nodeId) {
-    return { ...node, ...updates };
-  }
-  return { 
-    ...node, 
-    rightChildren: (node.rightChildren || []).map(child => updateNodeInTree(child, nodeId, updates)),
-    children: (node.children || []).map(child => updateNodeInTree(child, nodeId, updates)) 
-  };
-};
-
-// Find a node by ID
-const findNodeById = (node, id) => {
-  if (!node || !id) return null;
-  if (node.id === id) return node;
-  if (node.rightChildren) {
-    for (const child of node.rightChildren) {
-      const found = findNodeById(child, id);
-      if (found) return found;
-    }
-  }
-  if (node.children) {
-    for (const child of node.children) {
-      const found = findNodeById(child, id);
-      if (found) return found;
-    }
-  }
-  return null;
-};
-
-// Helper to check if a node is a leaf node (has NO children in either rightChildren or children)
-const isLeafNode = (node) => {
-  if (!node) return false;
-  const rightLen = node.rightChildren?.length || 0;
-  const bottomLen = node.children?.length || 0;
-  return rightLen === 0 && bottomLen === 0;
-};
-
-// Helper to update multiple node positions simultaneously by shiftDx, shiftDy from groupSnapshot
-const updateMultipleNodePositionsInTree = (root, groupSnapshot, shiftDx, shiftDy) => {
-  if (!root || !groupSnapshot) return root;
-  const traverse = (node) => {
-    if (!node) return null;
-    let nextX = node.x;
-    let nextY = node.y;
-    if (groupSnapshot[node.id]) {
-      nextX = Math.round(groupSnapshot[node.id].x + shiftDx);
-      nextY = Math.round(groupSnapshot[node.id].y + shiftDy);
-    }
-    return {
-      ...node,
-      x: nextX,
-      y: nextY,
-      rightChildren: (node.rightChildren || []).map(traverse),
-      children: (node.children || []).map(traverse)
-    };
-  };
-  return traverse(root);
-};
-
-// Helper to bulk delete multiple nodes from tree
-const deleteMultipleNodesFromTree = (root, idsToDeleteSet) => {
-  if (!root || !idsToDeleteSet || idsToDeleteSet.size === 0) return root;
-  if (idsToDeleteSet.has(root.id)) {
-    return root;
-  }
-  const filterAndTraverse = (node) => {
-    if (!node) return null;
-    const nextRightChildren = (node.rightChildren || [])
-      .filter(child => !idsToDeleteSet.has(child.id))
-      .map(filterAndTraverse);
-    const nextChildren = (node.children || [])
-      .filter(child => !idsToDeleteSet.has(child.id))
-      .map(filterAndTraverse);
-    return {
-      ...node,
-      rightChildren: nextRightChildren,
-      children: nextChildren
-    };
-  };
-  return filterAndTraverse(root);
-};
-
-// Helper to bulk update text for multiple nodes
-const updateMultipleNodesText = (root, idsSet, newText) => {
-  if (!root || !idsSet || idsSet.size === 0) return root;
-  const traverse = (node) => {
-    if (!node) return null;
-    const text = idsSet.has(node.id) ? newText : node.text;
-    return {
-      ...node,
-      text,
-      rightChildren: (node.rightChildren || []).map(traverse),
-      children: (node.children || []).map(traverse)
-    };
-  };
-  return traverse(root);
-};
-
-// Helper to recursively find a node's immediate parent node
-const findParentNode = (root, childId) => {
-  if (!root || !childId) return null;
-
-  for (const child of (root.rightChildren || [])) {
-    if (child && child.id === childId) {
-      return root;
-    }
-    const found = findParentNode(child, childId);
-    if (found) return found;
-  }
-
-  for (const child of (root.children || [])) {
-    if (child && child.id === childId) {
-      return root;
-    }
-    const found = findParentNode(child, childId);
-    if (found) return found;
-  }
-
-  return null;
-};
-
-// Helper to extract and group multi-selected children by parentId + direction
-const getMultiSelectionFormatGroups = (root, selectedNodeIds) => {
-  if (!root || !selectedNodeIds || selectedNodeIds.size < 2) {
-    return { isMulti: false, validGroups: [], hasValidGroups: false, totalValidNodesCount: 0, totalSelectedCount: 0 };
-  }
-
-  const selectedArray = Array.from(selectedNodeIds);
-  const groupsMap = new Map();
-
-  for (const nodeId of selectedArray) {
-    if (nodeId === root.id) {
-      // Root node has no parent
-      continue;
-    }
-
-    const parent = findParentNode(root, nodeId);
-    if (!parent) continue;
-
-    // Determine the child's logical direction relative to this parent
-    const isRightChild = (parent.rightChildren || []).some(c => c && c.id === nodeId);
-    const isBottomChild = (parent.children || []).some(c => c && c.id === nodeId);
-    if (!isRightChild && !isBottomChild) continue;
-
-    const childObj = (parent.rightChildren || []).find(c => c && c.id === nodeId) ||
-                     (parent.children || []).find(c => c && c.id === nodeId);
-    const side = getChildLogicalSide(childObj, isRightChild);
-
-    const groupKey = `${parent.id}___${side}`;
-    if (!groupsMap.has(groupKey)) {
-      groupsMap.set(groupKey, {
-        parent,
-        direction: side,
-        selectedNodeIds: new Set()
-      });
-    }
-    groupsMap.get(groupKey).selectedNodeIds.add(nodeId);
-  }
-
-  const validGroups = [];
-  groupsMap.forEach((group) => {
-    // Only 'right' and 'down' directions can be formatted
-    if ((group.direction === 'right' || group.direction === 'down') && group.selectedNodeIds.size >= 2) {
-      // Extract items in natural sibling order from parent's direction group
-      const allDirectional = getChildrenByDirection(group.parent)[group.direction] || [];
-      const items = allDirectional.filter(child => group.selectedNodeIds.has(child.id));
-      if (items.length >= 2) {
-        validGroups.push({
-          parent: group.parent,
-          direction: group.direction,
-          items,
-          count: items.length
-        });
-      }
-    }
-  });
-
-  return {
-    isMulti: true,
-    validGroups,
-    hasValidGroups: validGroups.length > 0,
-    totalValidNodesCount: validGroups.reduce((acc, g) => acc + g.items.length, 0),
-    totalSelectedCount: selectedNodeIds.size
-  };
-};
-
-// Helper to extract visible nodes respecting collapsed state
-const getVisibleNodes = (root, collapsedNodeIds = new Set()) => {
-  if (!root) return [];
-  const list = [];
-  const traverse = (node) => {
-    if (!node) return;
-    list.push(node);
-    // If node is collapsed, do NOT traverse its children into the visible list
-    const isNodeCollapsed = collapsedNodeIds && (typeof collapsedNodeIds.has === 'function' ? collapsedNodeIds.has(node.id) : !!collapsedNodeIds[node.id]);
-    if (isNodeCollapsed) {
-      return;
-    }
-    (node.rightChildren || []).forEach(traverse);
-    (node.children || []).forEach(traverse);
-  };
-  traverse(root);
-  return list;
-};
-
-// Helper to extract visible connections respecting collapsed state
-const getVisibleConnections = (root, collapsedNodeIds = new Set()) => {
-  if (!root) return [];
-  const conns = [];
-  const traverse = (node) => {
-    if (!node) return;
-    const isNodeCollapsed = collapsedNodeIds && (typeof collapsedNodeIds.has === 'function' ? collapsedNodeIds.has(node.id) : !!collapsedNodeIds[node.id]);
-    if (isNodeCollapsed) {
-      return;
-    }
-    (node.rightChildren || []).forEach(child => {
-      const side = getChildLogicalSide(child, true);
-      conns.push({
-        id: `conn-${node.id}-${child.id}`,
-        from: node,
-        to: child,
-        branchType: side
-      });
-      traverse(child);
-    });
-    (node.children || []).forEach(child => {
-      const side = getChildLogicalSide(child, false);
-      conns.push({
-        id: `conn-${node.id}-${child.id}`,
-        from: node,
-        to: child,
-        branchType: side
-      });
-      traverse(child);
-    });
-  };
-  traverse(root);
-  return conns;
-};
-
-// Helper to calculate smooth dynamic curved Bézier connector paths with fixed logical port routing
-const calculateConnectorPath = (fromNode, toNode, dimensionsMap = {}, branchType = 'down') => {
-  if (!fromNode || !toNode) return { d: '', x1: 0, y1: 0, x2: 0, y2: 0 };
-  const fromDim = (dimensionsMap && dimensionsMap[fromNode.id]) || { width: 170, height: 48 };
-  const toDim = (dimensionsMap && dimensionsMap[toNode.id]) || { width: 170, height: 48 };
-
-  const fx = typeof fromNode.x === 'number' ? fromNode.x : 650;
-  const fy = typeof fromNode.y === 'number' ? fromNode.y : 260;
-  const fw = fromDim.width || 170;
-  const fh = fromDim.height || 48;
-  const fcx = fx + fw / 2;
-  const fcy = fy + fh / 2;
-
-  const tx = typeof toNode.x === 'number' ? toNode.x : 650;
-  const ty = typeof toNode.y === 'number' ? toNode.y : 450;
-  const tw = toDim.width || 170;
-  const th = toDim.height || 48;
-  const tcx = tx + tw / 2;
-  const tcy = ty + th / 2;
-
-  // 4 Connection Ports on parent and child
-  const portsFrom = {
-    right: { x: fx + fw, y: fcy, dir: { x: 1, y: 0 } },
-    left: { x: fx, y: fcy, dir: { x: -1, y: 0 } },
-    bottom: { x: fcx, y: fy + fh, dir: { x: 0, y: 1 } },
-    top: { x: fcx, y: fy, dir: { x: 0, y: -1 } }
-  };
-
-  const portsTo = {
-    right: { x: tx + tw, y: tcy, dir: { x: 1, y: 0 } },
-    left: { x: tx, y: tcy, dir: { x: -1, y: 0 } },
-    bottom: { x: tcx, y: ty + th, dir: { x: 0, y: 1 } },
-    top: { x: tcx, y: ty, dir: { x: 0, y: -1 } }
-  };
-
-  let p1, p2;
-  const normBranch = (branchType === 'left') ? 'left' :
-                     (branchType === 'up') ? 'up' :
-                     (branchType === 'down' || branchType === 'bottom') ? 'down' : 'right';
-
-  if (normBranch === 'right') {
-    // Parent RIGHT port -> Child LEFT port
-    p1 = portsFrom.right;
-    p2 = portsTo.left;
-  } else if (normBranch === 'left') {
-    // Parent LEFT port -> Child RIGHT port
-    p1 = portsFrom.left;
-    p2 = portsTo.right;
-  } else if (normBranch === 'up') {
-    // Parent TOP port -> Child BOTTOM port
-    p1 = portsFrom.top;
-    p2 = portsTo.bottom;
-  } else {
-    // Parent BOTTOM port -> Child TOP port
-    p1 = portsFrom.bottom;
-    p2 = portsTo.top;
-  }
-
-  // Calculate dynamic control points for smooth natural curve originating from logical port directions
-  const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-  const curvature = Math.max(35, Math.min(220, dist * 0.45));
-
-  const c1x = p1.x + p1.dir.x * curvature;
-  const c1y = p1.y + p1.dir.y * curvature;
-  const c2x = p2.x + p2.dir.x * curvature;
-  const c2y = p2.y + p2.dir.y * curvature;
-
-  const d = `M ${p1.x} ${p1.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2.x} ${p2.y}`;
-
-  return {
-    d,
-    x1: p1.x,
-    y1: p1.y,
-    x2: p2.x,
-    y2: p2.y
-  };
-};
-
-const RichTextEditor = ({ initialContent, onChange }) => {
-  const editorRef = useRef(null);
-  const [noteZoom, setNoteZoom] = useState(1);
-
-  useEffect(() => {
-    if (editorRef.current) {
-      editorRef.current.innerHTML = initialContent || '';
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only set initial content once on mount (component remounts when active node changes)
-
-  // Sync external changes (e.g. from Undo/Redo) when the editor is not actively being edited
-  useEffect(() => {
-    if (editorRef.current && document.activeElement !== editorRef.current) {
-      if (editorRef.current.innerHTML !== (initialContent || '')) {
-        editorRef.current.innerHTML = initialContent || '';
-      }
-    }
-  }, [initialContent]);
-
-  const execCmd = (cmd) => {
-    document.execCommand(cmd, false, null);
-    if (editorRef.current) {
-      editorRef.current.focus();
-      const html = editorRef.current.innerHTML;
-      onChange(hasTextContent(html) ? html : '');
-    }
-  };
-
-  const handleInput = (e) => {
-    const html = e.currentTarget.innerHTML;
-    onChange(hasTextContent(html) ? html : '');
-  };
-
-  const handleZoomIn = () => {
-    setNoteZoom(prev => Math.min(2.5, +(prev + 0.15).toFixed(2)));
-  };
-
-  const handleZoomOut = () => {
-    setNoteZoom(prev => Math.max(0.6, +(prev - 0.15).toFixed(2)));
-  };
-
-  const handleZoomReset = () => {
-    setNoteZoom(1);
-  };
-
-  return (
-    <div className="flex flex-col h-full border border-zinc-800 rounded-xl overflow-hidden bg-zinc-900/50">
-      {/* Top Toolbar */}
-      <div className="flex items-center justify-between p-2 border-b border-zinc-800 bg-zinc-900">
-        <div className="flex items-center gap-1">
-          <button 
-            type="button"
-            onMouseDown={(e) => { e.preventDefault(); execCmd('bold'); }} 
-            className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors cursor-pointer" 
-            title="Bold"
-          >
-            <Bold size={16}/>
-          </button>
-          <button 
-            type="button"
-            onMouseDown={(e) => { e.preventDefault(); execCmd('italic'); }} 
-            className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors cursor-pointer" 
-            title="Italic"
-          >
-            <Italic size={16}/>
-          </button>
-          <div className="w-px h-4 bg-zinc-700 mx-1"></div>
-          <button 
-            type="button"
-            onMouseDown={(e) => { e.preventDefault(); execCmd('insertUnorderedList'); }} 
-            className="p-1.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-colors cursor-pointer" 
-            title="Bullet List"
-          >
-            <List size={16}/>
-          </button>
-        </div>
-
-        {/* Right Side: Zoom Controls */}
-        <div className="flex items-center space-x-1 bg-zinc-950/80 border border-zinc-800 rounded-lg p-0.5 shadow-sm">
-          <button
-            type="button"
-            onClick={handleZoomOut}
-            className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer"
-            title="Zoom Out Notes"
-          >
-            <ZoomOut size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={handleZoomReset}
-            className="px-1.5 text-[10px] text-zinc-300 font-mono hover:text-purple-300 cursor-pointer"
-            title="Reset Zoom (100%)"
-          >
-            {Math.round(noteZoom * 100)}%
-          </button>
-          <button
-            type="button"
-            onClick={handleZoomIn}
-            className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer"
-            title="Zoom In Notes"
-          >
-            <ZoomIn size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Editor Content Area */}
-      <div 
-        ref={editorRef}
-        contentEditable
-        suppressContentEditableWarning={true}
-        data-placeholder="Write your detailed thoughts and explanations here..."
-        style={{
-          fontSize: `${Math.round(14 * noteZoom)}px`,
-          lineHeight: 1.7
-        }}
-        className="rich-text-content flex-grow p-4 outline-none text-zinc-200 overflow-y-auto leading-relaxed"
-        onInput={handleInput}
-        onBlur={handleInput}
-      />
-    </div>
-  );
-};
-
-// Node Photos Manager Component
-const NodePhotosManager = ({ images = [], onAddImages, onDeleteImage, onViewPhoto }) => {
-  const [selectedPhoto, setSelectedPhoto] = useState(null);
-  const [localZoom, setLocalZoom] = useState(1);
-  const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const fileInputRef = useRef(null);
-
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      onAddImages(Array.from(e.target.files));
-      e.target.value = '';
-    }
-  };
-
-  const handlePasteScreenshot = async () => {
-    try {
-      if (navigator.clipboard && navigator.clipboard.read) {
-        const items = await navigator.clipboard.read();
-        const imageFiles = [];
-        for (const item of items) {
-          for (const type of item.types) {
-            if (type.startsWith('image/')) {
-              const blob = await item.getType(type);
-              const ext = type.split('/')[1] || 'png';
-              const file = new File(
-                [blob], 
-                `Screenshot_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.${ext}`, 
-                { type }
-              );
-              imageFiles.push(file);
-            }
-          }
-        }
-        if (imageFiles.length > 0) {
-          onAddImages(imageFiles);
-          return;
-        }
-      }
-      alert('Press Ctrl+V to paste screenshot or copied image directly into this Node!');
-    } catch {
-      alert('Press Ctrl+V to paste screenshot or copied image directly into this Node!');
-    }
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDraggingOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDraggingOver(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDraggingOver(false);
-  };
-
-  return (
-    <div 
-      className="flex flex-col h-full overflow-hidden relative"
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      <input 
-        type="file" 
-        ref={fileInputRef} 
-        onChange={handleFileChange} 
-        accept="image/*" 
-        multiple 
-        className="hidden" 
-      />
-
-      {images.length === 0 ? (
-        // Empty State: Prominent Import File & Paste Screenshot buttons + Dropzone
-        <div className={`flex flex-col items-center justify-center h-full p-6 text-center rounded-2xl border-2 border-dashed transition-all duration-300 ${
-          isDraggingOver 
-            ? 'border-purple-500 bg-purple-500/15 ring-2 ring-purple-500/30' 
-            : 'border-zinc-800 bg-zinc-900/30 hover:border-zinc-700'
-        }`}>
-          <div className="w-16 h-16 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center mb-4 text-purple-400 shadow-[0_0_20px_rgba(168,85,247,0.2)]">
-            <FileImage className="w-8 h-8" />
-          </div>
-          
-          <h4 className="text-sm font-semibold text-white mb-1">No Photos Attached Yet</h4>
-          <p className="text-xs text-zinc-400 max-w-xs mb-6">
-            Attach screenshots, mockups, or diagrams directly to this thought node.
-          </p>
-
-          <div className="flex flex-col sm:flex-row items-center gap-3 w-full max-w-xs">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center space-x-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
-            >
-              <Upload className="w-4 h-4" />
-              <span>Import File</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handlePasteScreenshot}
-              className="w-full px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-purple-300 hover:text-white rounded-xl text-xs font-semibold flex items-center justify-center space-x-2 border border-zinc-700 transition-all cursor-pointer"
-              title="Paste screenshot from clipboard (or press Ctrl+V)"
-            >
-              <ClipboardPaste className="w-4 h-4 text-purple-400" />
-              <span>Paste Screenshot</span>
-            </button>
-          </div>
-
-          <div className="mt-6 text-[11px] text-zinc-500 font-mono flex items-center space-x-1.5">
-            <span>Tip: Drag & drop images here or press</span>
-            <kbd className="px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-300">Ctrl+V</kbd>
-          </div>
-        </div>
-      ) : (
-        // Populated State: Gallery & Actions
-        <div className="flex flex-col h-full overflow-hidden">
-          {/* Action bar */}
-          <div className="flex items-center justify-between mb-3 pb-2 border-b border-zinc-800/80 flex-none">
-            <span className="text-xs font-semibold text-zinc-400">
-              Attached Photos ({images.length})
-            </span>
-            <div className="flex items-center space-x-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-xs font-medium flex items-center space-x-1.5 border border-zinc-700/80 transition-colors cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5 text-purple-400" />
-                <span>Add Photo</span>
-              </button>
-              <button
-                type="button"
-                onClick={handlePasteScreenshot}
-                className="px-2.5 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded-lg text-xs font-medium flex items-center space-x-1.5 border border-purple-500/40 transition-colors cursor-pointer"
-              >
-                <ClipboardPaste className="w-3.5 h-3.5 text-purple-400" />
-                <span>Paste</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Photos Grid */}
-          <div className="flex-grow overflow-y-auto no-scrollbar grid grid-cols-2 gap-3 p-1">
-            {images.map((img) => (
-              <div 
-                key={img.id}
-                onClick={() => {
-                  if (onViewPhoto) {
-                    onViewPhoto(img);
-                  } else {
-                    setSelectedPhoto(img);
-                  }
-                }}
-                className="group relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-purple-500/60 shadow-lg transition-all duration-200 aspect-square flex flex-col cursor-pointer"
-                title="Click to view image"
-              >
-                <img 
-                  src={img.url} 
-                  alt="Photo" 
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 pointer-events-none"
-                />
-
-                {/* Dark overlay on hover */}
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-start items-end p-2 pointer-events-none">
-                  <div className="pointer-events-auto">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteImage(img.id);
-                      }}
-                      className="p-1.5 bg-red-500/80 hover:bg-red-600 text-white rounded-lg transition-colors cursor-pointer shadow-md"
-                      title="Delete Photo"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Inline Container Photo Preview (Clean view with ONLY Zoom and Close buttons) */}
-      {selectedPhoto && (
-        <div className="absolute inset-0 z-30 bg-[#0c0c0e]/98 flex flex-col overflow-hidden animate-in fade-in duration-150">
-          <div className="flex items-center justify-between px-3.5 py-2 border-b border-zinc-800 bg-zinc-900/90 select-none">
-            {/* ONLY Zoom & Close Controls */}
-            <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-lg p-0.5">
-              <button
-                type="button"
-                onClick={() => setLocalZoom(z => Math.max(0.25, Math.round((z - 0.2) * 10) / 10))}
-                className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer"
-                title="Zoom Out"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <span className="text-[11px] px-2 text-zinc-300 font-mono select-none min-w-[40px] text-center">
-                {Math.round(localZoom * 100)}%
-              </span>
-              <button
-                type="button"
-                onClick={() => setLocalZoom(z => Math.min(4, Math.round((z + 0.2) * 10) / 10))}
-                className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer"
-                title="Zoom In"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setLocalZoom(1)}
-                className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer border-l border-zinc-800 ml-0.5"
-                title="Reset Zoom"
-              >
-                <RotateCcw className="w-3 h-3" />
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => { setSelectedPhoto(null); setLocalZoom(1); }}
-              className="p-1.5 text-zinc-400 hover:text-white hover:bg-red-500/20 rounded-lg transition-colors cursor-pointer"
-              title="Close Preview"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div 
-            className="flex-grow p-3 flex items-center justify-center overflow-auto bg-zinc-950/80"
-            onWheel={(e) => {
-              e.preventDefault();
-              setLocalZoom(z => Math.max(0.25, Math.min(4, Math.round((z + (e.deltaY < 0 ? 0.15 : -0.15)) * 100) / 100)));
-            }}
-          >
-            <img 
-              src={selectedPhoto.url} 
-              alt="" 
-              style={{ transform: `scale(${localZoom})`, transformOrigin: 'center center', transition: 'transform 0.1s ease-out' }}
-              className="max-h-full max-w-full object-contain rounded-lg shadow-xl pointer-events-none"
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Floating Draggable & Resizable Photos Window for Read Mode
-const FloatingMediaWindow = ({
-  activeNode,
-  isOpen,
-  onClose,
-  onUpdateNode,
-  processNodeImages,
-  onViewPhoto
-}) => {
-  const [size, setSize] = useState(() => ({
-    width: Math.min(460, Math.floor(window.innerWidth * 0.85)),
-    height: Math.min(500, Math.floor(window.innerHeight * 0.8))
-  }));
-  const [position, setPosition] = useState(() => {
-    const initialWidth = Math.min(460, Math.floor(window.innerWidth * 0.85));
-    return {
-      x: Math.max(20, Math.round((window.innerWidth - initialWidth) / 2)),
-      y: 76
-    };
-  });
-  const [isMinimized, setIsMinimized] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
-
-  const dragOffsetRef = useRef({ x: 0, y: 0 });
-  const resizeStartRef = useRef({ startX: 0, startY: 0, startWidth: 0, startHeight: 0 });
-
-  // Smooth Dragging
-  const handleDragStart = (e) => {
-    if (e.target.closest('button, input, textarea, a, .no-drag')) return;
-    e.preventDefault();
-    dragOffsetRef.current = {
-      x: e.clientX - position.x,
-      y: e.clientY - position.y
-    };
-    setIsDragging(true);
-
-    const onMouseMove = (moveEvent) => {
-      const maxX = Math.max(10, window.innerWidth - size.width - 10);
-      const maxY = Math.max(10, window.innerHeight - (isMinimized ? 48 : size.height) - 10);
-      const nextX = Math.max(10, Math.min(maxX, moveEvent.clientX - dragOffsetRef.current.x));
-      const nextY = Math.max(10, Math.min(maxY, moveEvent.clientY - dragOffsetRef.current.y));
-      setPosition({ x: nextX, y: nextY });
-    };
-
-    const onMouseUp = () => {
-      setIsDragging(false);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-  };
-
-  // Smooth Corner / Edge Resizing
-  const handleResizeStart = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    resizeStartRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      startWidth: size.width,
-      startHeight: size.height
-    };
-    setIsResizing(true);
-
-    const onMouseMove = (moveEvent) => {
-      const deltaX = moveEvent.clientX - resizeStartRef.current.startX;
-      const deltaY = moveEvent.clientY - resizeStartRef.current.startY;
-      
-      const newWidth = Math.max(420, Math.min(window.innerWidth * 0.75, resizeStartRef.current.startWidth + deltaX));
-      const newHeight = Math.max(380, Math.min(window.innerHeight * 0.85, resizeStartRef.current.startHeight + deltaY));
-      
-      setSize({ width: newWidth, height: newHeight });
-    };
-
-    const onMouseUp = () => {
-      setIsResizing(false);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-  };
-
-  const handleIncreaseSize = () => {
-    setSize(prev => ({
-      width: Math.min(window.innerWidth * 0.75, prev.width + 50),
-      height: Math.min(window.innerHeight * 0.85, prev.height + 50)
-    }));
-  };
-
-  const handleDecreaseSize = () => {
-    setSize(prev => ({
-      width: Math.max(420, prev.width - 50),
-      height: Math.max(380, prev.height - 50)
-    }));
-  };
-
-  const handleResetSize = () => {
-    setSize({
-      width: Math.min(460, Math.floor(window.innerWidth * 0.85)),
-      height: Math.min(500, Math.floor(window.innerHeight * 0.8))
-    });
-  };
-
-  if (!activeNode) return null;
-
-  return (
-    <>
-      {/* Full-screen mask during drag/resize for buttery smooth motion */}
-      {isOpen && (isDragging || isResizing) && (
-        <div className="fixed inset-0 z-[10001] bg-transparent select-none cursor-move pointer-events-auto" />
-      )}
-
-      <div
-        style={{
-          position: 'fixed',
-          left: `${position.x}px`,
-          top: `${position.y}px`,
-          width: `${size.width}px`,
-          height: isMinimized ? 'auto' : `${size.height}px`,
-          zIndex: 9990,
-          display: isOpen ? 'flex' : 'none'
-        }}
-        className="floating-media-window flex flex-col bg-[#0c0c0e]/95 backdrop-blur-2xl border border-zinc-700/80 rounded-2xl shadow-[0_25px_60px_rgba(0,0,0,0.85)] ring-1 ring-purple-500/30 overflow-hidden select-none animate-in fade-in zoom-in-95 duration-200 transition-[box-shadow]"
-      >
-        {/* Draggable Header */}
-        <div
-          onMouseDown={handleDragStart}
-          className="flex items-center justify-between px-3.5 py-2.5 bg-zinc-900/90 border-b border-zinc-800 cursor-grab active:cursor-grabbing text-zinc-300"
-          title="Hold & drag to move this floating photos window anywhere"
-        >
-          <div className="flex items-center space-x-2 overflow-hidden mr-2">
-            <GripHorizontal className="w-4 h-4 text-zinc-500 hover:text-purple-400 transition-colors flex-shrink-0" />
-            <span className="text-xs font-semibold text-white truncate max-w-[150px]">
-              {activeNode.text || 'Untitled Node'}
-            </span>
-            <span className="text-[10px] text-purple-400 font-mono px-1.5 py-0.5 bg-purple-500/10 rounded border border-purple-500/20 flex-shrink-0 flex items-center space-x-1">
-              <FileImage className="w-3 h-3" />
-              <span>Photos</span>
-              {activeNode.images && activeNode.images.length > 0 && (
-                <span className="px-1 py-0.2 rounded-full text-[9px] font-mono bg-purple-500/30 text-purple-200 ml-0.5">
-                  {activeNode.images.length}
-                </span>
-              )}
-            </span>
-          </div>
-
-          {/* Window Action Buttons (Size / Minimize / Close) */}
-          <div className="flex items-center space-x-1 no-drag flex-shrink-0">
-            <button
-              type="button"
-              onClick={handleDecreaseSize}
-              className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors cursor-pointer"
-              title="Decrease window size"
-            >
-              <ZoomOut className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={handleIncreaseSize}
-              className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors cursor-pointer"
-              title="Increase window size"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={handleResetSize}
-              className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors cursor-pointer"
-              title="Reset window size"
-            >
-              <RotateCcw className="w-3 h-3" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsMinimized(!isMinimized)}
-              className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded transition-colors cursor-pointer"
-              title={isMinimized ? "Expand window" : "Minimize window"}
-            >
-              {isMinimized ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors cursor-pointer"
-              title="Close floating photos window"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Content Body */}
-        {!isMinimized && (
-          <div className="flex-grow p-3 overflow-hidden flex flex-col relative bg-zinc-950/40">
-            <div className="w-full h-full flex flex-col">
-              <NodePhotosManager
-                key={`float-photos-${activeNode.id}`}
-                images={activeNode.images || []}
-                onAddImages={(files) => processNodeImages(files, activeNode)}
-                onDeleteImage={(imageId) => {
-                  const remaining = (activeNode.images || []).filter(img => img.id !== imageId);
-                  onUpdateNode({ images: remaining });
-                }}
-                onViewPhoto={onViewPhoto}
-              />
-            </div>
-
-            {/* Corner Resize Drag Handle */}
-            <div
-              onMouseDown={handleResizeStart}
-              className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize hover:bg-purple-500/30 transition-colors z-20 flex items-center justify-center group"
-              title="Drag corner to smoothly resize window"
-            >
-              <div className="w-2 h-2 border-r-2 border-b-2 border-zinc-500 group-hover:border-purple-400 transition-colors" />
-            </div>
-          </div>
-        )}
-      </div>
-    </>
-  );
-};
-
-const MindMapNode = ({ 
-  node, 
-  activeNodeId, 
-  isSelected = false,
-  isDragging,
-  dragOffset = null,
-  isCollapsed,
-  onToggleCollapse,
-  onNodeMouseDown,
-  onNodeClick,
-  onDeleteNode,
-  onOpenMediaTab, 
-  isReadMode, 
-  isFloatingMediaOpen,
-  onCreateNodeInDirection,
-  onMeasureDimensions 
-}) => {
-  const nodeRef = useRef(null);
-  const clickTrackerRef = useRef({ count: 0, lastTime: 0 });
-  const isNodeSelected = isSelected || node.id === activeNodeId;
-  const hasNotes = hasTextContent(node.notes);
-  const hasImages = node.images && node.images.length > 0;
-  const hasMedia = hasImages;
-
-  const rightCount = node.rightChildren?.length || 0;
-  const bottomCount = node.children?.length || 0;
-  const totalChildCount = rightCount + bottomCount;
-  const hasChildNodes = totalChildCount > 0;
-
-  // In Read Mode, if floating window is closed and no photo exists yet, show the floating media opener icon
-  const showReadModeMediaOpener = isReadMode && !isFloatingMediaOpen && !hasMedia;
-  const showAnyIndicator = hasNotes || hasImages || showReadModeMediaOpener;
-  
-  useLayoutEffect(() => {
-    if (nodeRef.current && onMeasureDimensions) {
-      // Use offsetWidth / offsetHeight so dimensions are purely unscaled world coordinates
-      const el = nodeRef.current;
-      const w = el.offsetWidth;
-      const h = el.offsetHeight;
-      if (w > 0 && h > 0) {
-        onMeasureDimensions(node.id, w, h);
-      }
-    }
-  }, [node.id, node.text, totalChildCount, isCollapsed, showAnyIndicator, onMeasureDimensions]);
-
-  const handleCardClick = (e) => {
-    if (e.target.closest('button, [title*="Open"], [title*="Create"], [title*="Collapse"], [title*="Expand"]')) {
-      return;
-    }
-    e.stopPropagation();
-
-    const now = Date.now();
-    if (now - clickTrackerRef.current.lastTime < 500) {
-      clickTrackerRef.current.count += 1;
-    } else {
-      clickTrackerRef.current.count = 1;
-    }
-    clickTrackerRef.current.lastTime = now;
-
-    // Triple Click: delete this node! (Disabled in Read Mode)
-    if (clickTrackerRef.current.count >= 3 || e.detail >= 3) {
-      clickTrackerRef.current.count = 0;
-      if (isReadMode) {
-        // Ignore triple-click delete in Read Mode
-        if (onNodeClick) {
-          onNodeClick(node, e);
-        }
-        return;
-      }
-      if (onDeleteNode) {
-        onDeleteNode(node.id);
-      }
-      return;
-    }
-
-    if (onNodeClick) {
-      onNodeClick(node, e);
-    }
-  };
-
-  const xPos = (typeof node.x === 'number' ? node.x : 650) + (dragOffset?.dx || 0);
-  const yPos = (typeof node.y === 'number' ? node.y : 260) + (dragOffset?.dy || 0);
-
-  return (
-    <div 
-      id={`node-${node.id}`} 
-      data-node-id={node.id}
-      style={{
-        position: 'absolute',
-        left: `${xPos}px`,
-        top: `${yPos}px`,
-        zIndex: isDragging ? 40 : (isNodeSelected ? 30 : 10)
-      }}
-      className="mind-map-node select-none inline-flex flex-col items-center group/node"
-      onMouseDown={(e) => onNodeMouseDown && onNodeMouseDown(e, node)}
-    >
-      {/* Node Card Box */}
-      <div 
-        ref={nodeRef}
-        onClick={handleCardClick}
-        title={isReadMode ? "Click to select | Drag to move" : "Click to select | Triple-click (3x) to delete | Drag to move"}
-        className={`
-          relative z-10 px-6 py-3 rounded-xl font-mono text-sm tracking-wide select-none cursor-pointer
-          shadow-[0_6px_20px_-8px_rgba(0,0,0,0.6)] border transition-all duration-150
-          ${isDragging ? 'cursor-grabbing scale-[1.02] shadow-[0_12px_32px_rgba(168,85,247,0.45)] ring-2 ring-purple-400/70' : 'cursor-grab hover:scale-[1.01]'}
-          ${isNodeSelected
-            ? 'bg-purple-950/90 border-purple-500 text-purple-100 shadow-[0_0_25px_-4px_rgba(168,85,247,0.65)] ring-2 ring-purple-500/50' 
-            : 'bg-zinc-900/95 border-zinc-700 text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800'
-          }
-        `}
-      >
-        {/* Collapse / Expand Toggle Button (appears ONLY when the node has child nodes) */}
-        {hasChildNodes && (
-          <button
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (onToggleCollapse) onToggleCollapse(node.id);
-            }}
-            className={`
-              absolute -top-3.5 -left-3.5 min-w-[24px] h-6 px-1 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl cursor-pointer z-30 group/collapse
-              ${isCollapsed 
-                ? 'bg-purple-600 border border-purple-400 text-white shadow-[0_0_15px_rgba(168,85,247,0.85)] scale-110 ring-2 ring-purple-400/40 hover:bg-purple-500' 
-                : 'bg-zinc-900/95 border border-zinc-700/90 hover:border-purple-400 hover:bg-zinc-800 text-zinc-400 hover:text-purple-300'
-              }
-            `}
-            title={isCollapsed ? `Expand ${totalChildCount} hidden child nodes` : `Collapse ${totalChildCount} child nodes`}
-          >
-            {isCollapsed ? (
-              <span className="text-[10px] font-bold font-mono tracking-tight flex items-center space-x-0.5 pointer-events-none">
-                <ChevronRight size={11} strokeWidth={3} />
-                <span>{totalChildCount}</span>
-              </span>
-            ) : (
-              <ChevronDown size={12} strokeWidth={2.5} className="group-hover/collapse:scale-110 transition-transform pointer-events-none" />
-            )}
-          </button>
-        )}
-
-        <span className="pointer-events-none select-none font-medium">
-          {node.text || 'Untitled'}
-        </span>
-        
-        {/* Interactive Indicators / Badges for attachments (elevated above the top-right corner with a clear gap from the right "+" button) */}
-        {showAnyIndicator && (
-          <div 
-            className="absolute -top-7 left-[calc(100%-10px)] flex items-center space-x-1 bg-zinc-900/95 p-1 rounded-lg border border-zinc-700/80 shadow-xl z-20 whitespace-nowrap"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {hasNotes && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onOpenMediaTab) onOpenMediaTab(node, 'notes');
-                  else onNodeClick(node);
-                }}
-                className="p-1 hover:bg-blue-500/20 rounded text-blue-400 hover:text-blue-300 transition-colors cursor-pointer"
-                title="Open Notes"
-              >
-                <FileText size={12} />
-              </button>
-            )}
-            {hasImages && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onOpenMediaTab) onOpenMediaTab(node, 'photos');
-                  else onNodeClick(node);
-                }}
-                className="p-1 hover:bg-purple-500/20 rounded text-purple-400 hover:text-purple-300 transition-colors cursor-pointer"
-                title="Open Photos Preview"
-              >
-                <FileImage size={12} />
-              </button>
-            )}
-
-            {/* Special Floating Media Opener icon in Read Mode */}
-            {showReadModeMediaOpener && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (onOpenMediaTab) onOpenMediaTab(node, 'photos');
-                  else onNodeClick(node);
-                }}
-                className="p-1 hover:bg-purple-500/25 bg-purple-500/10 rounded text-purple-400 hover:text-purple-200 transition-colors cursor-pointer border border-purple-500/30"
-                title="Open Floating Photos Window"
-              >
-                <Layers size={12} />
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Right & Bottom "+" Buttons (Normal Mode Only; completely hidden in Read Mode) */}
-        {!isReadMode && (
-          <>
-            {/* Right "+" Button: Add connected blank node on the right */}
-            <button
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (onCreateNodeInDirection) onCreateNodeInDirection(node, 'right');
-              }}
-              className="absolute -right-3.5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-zinc-900 border border-zinc-700/90 hover:border-purple-400 hover:bg-purple-600 text-zinc-400 hover:text-white flex items-center justify-center transition-all duration-200 shadow-lg hover:shadow-[0_0_12px_rgba(168,85,247,0.7)] cursor-pointer z-30 group/btn hover:scale-110"
-              title="Create connected blank node to the right (→)"
-            >
-              <Plus size={12} strokeWidth={2.5} className="group-hover/btn:rotate-90 transition-transform duration-200 pointer-events-none" />
-            </button>
-
-            {/* Bottom "+" Button: Add connected blank node below */}
-            <button
-              type="button"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (onCreateNodeInDirection) onCreateNodeInDirection(node, 'bottom');
-              }}
-              className="absolute -bottom-3.5 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-zinc-900 border border-zinc-700/90 hover:border-purple-400 hover:bg-purple-600 text-zinc-400 hover:text-white flex items-center justify-center transition-all duration-200 shadow-lg hover:shadow-[0_0_12px_rgba(168,85,247,0.7)] cursor-pointer z-30 group/btn hover:scale-110"
-              title="Create connected blank node below (↓)"
-            >
-              <Plus size={12} strokeWidth={2.5} className="group-hover/btn:rotate-90 transition-transform duration-200 pointer-events-none" />
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
-
-
-// Clean Canvas-based PDF Viewer with State Persistence (restores exact page & scroll position)
-const PdfViewer = ({ url, fileId, zoom = 1, initialViewState = {}, onSaveViewState }) => {
-  const canvasRef = useRef(null);
-  const containerRef = useRef(null);
-  const [pdfDoc, setPdfDoc] = useState(null);
-  const [currentPage, setCurrentPage] = useState(initialViewState?.page || 1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const renderTaskRef = useRef(null);
-  const hasRestoredScrollRef = useRef(false);
-
-  useEffect(() => {
-    let isCancelled = false;
-
-    const loadPdf = async () => {
-      try {
-        const loadingTask = pdfjsLib.getDocument(url);
-        const doc = await loadingTask.promise;
-        if (!isCancelled) {
-          setPdfDoc(doc);
-          setTotalPages(doc.numPages);
-          const restoredPage = Math.min(doc.numPages, Math.max(1, initialViewState?.page || 1));
-          setCurrentPage(restoredPage);
-          setIsLoading(false);
-          setError(null);
-        }
-      } catch (err) {
-        console.error('PDF load error:', err);
-        if (!isCancelled) {
-          setError('Failed to load PDF preview');
-          setIsLoading(false);
-        }
-      }
-    };
-
-    loadPdf();
-    return () => {
-      isCancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
-
-  useEffect(() => {
-    if (!pdfDoc || !canvasRef.current) return;
-    let isCancelled = false;
-
-    const renderPage = async () => {
-      try {
-        if (renderTaskRef.current) {
-          renderTaskRef.current.cancel();
-        }
-
-        const page = await pdfDoc.getPage(currentPage);
-        if (isCancelled || !canvasRef.current) return;
-
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        // Render at 2.0x base resolution for sharp text at any zoom level
-        const viewport = page.getViewport({ scale: 2.0 });
-
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-
-        const renderContext = {
-          canvasContext: ctx,
-          viewport: viewport
-        };
-
-        const renderTask = page.render(renderContext);
-        renderTaskRef.current = renderTask;
-        await renderTask.promise;
-
-        // Restore scroll position after initial page render
-        if (!hasRestoredScrollRef.current && containerRef.current) {
-          if (initialViewState?.pdfScrollTop !== undefined) {
-            containerRef.current.scrollTop = initialViewState.pdfScrollTop;
-          }
-          if (initialViewState?.pdfScrollLeft !== undefined) {
-            containerRef.current.scrollLeft = initialViewState.pdfScrollLeft;
-          }
-          hasRestoredScrollRef.current = true;
-        }
-      } catch (err) {
-        if (err?.name !== 'RenderingCancelledException') {
-          console.error('Render page error:', err);
-        }
-      }
-    };
-
-    renderPage();
-    return () => {
-      isCancelled = true;
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfDoc, currentPage]);
-
-  const handlePageChange = (newPage) => {
-    setCurrentPage(newPage);
-    if (onSaveViewState && fileId) {
-      onSaveViewState(fileId, { page: newPage, pdfScrollTop: 0, pdfScrollLeft: 0 });
-    }
-  };
-
-  const handleScroll = (e) => {
-    if (onSaveViewState && fileId) {
-      onSaveViewState(fileId, {
-        pdfScrollTop: e.currentTarget.scrollTop,
-        pdfScrollLeft: e.currentTarget.scrollLeft
-      });
-    }
-  };
-
-  if (error) {
-    return (
-      <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
-        <object 
-          data={`${url}#toolbar=0&navpanes=0&scrollbar=0`} 
-          type="application/pdf" 
-          className="w-full h-full rounded-xl border border-zinc-800"
-        >
-          <p className="text-zinc-400 text-xs">PDF preview not supported directly in this browser view.</p>
-        </object>
-      </div>
-    );
-  }
-
-  return (
-    <div className="w-full h-full flex flex-col items-center justify-between relative overflow-hidden bg-zinc-950">
-      {isLoading ? (
-        <div className="flex-grow flex flex-col items-center justify-center text-zinc-400 space-y-2">
-          <div className="w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-          <span className="text-xs">Rendering PDF...</span>
-        </div>
-      ) : (
-        <div 
-          ref={containerRef}
-          onScroll={handleScroll}
-          className="flex-grow w-full h-full overflow-auto flex items-center justify-center p-3"
-        >
-          <div 
-            style={{
-              transform: `scale(${zoom})`,
-              transformOrigin: 'center center',
-              transition: 'transform 0.15s ease-out'
-            }}
-            className="flex items-center justify-center flex-shrink-0"
-          >
-            <canvas 
-              ref={canvasRef} 
-              className="max-h-[350px] w-auto rounded-lg shadow-2xl bg-white block" 
-            />
-          </div>
-        </div>
-      )}
-
-      {totalPages > 1 && (
-        <div className="flex items-center space-x-2 py-1 px-3 bg-zinc-900/95 border border-zinc-800 rounded-full text-xs text-zinc-300 shadow-xl flex-none my-1 z-10 backdrop-blur-md">
-          <button
-            type="button"
-            disabled={currentPage <= 1}
-            onClick={() => handlePageChange(Math.max(1, currentPage - 1))}
-            className="px-1.5 py-0.5 rounded hover:bg-zinc-800 disabled:opacity-30 cursor-pointer"
-          >
-            ‹
-          </button>
-          <span className="font-mono text-[11px]">Page {currentPage} / {totalPages}</span>
-          <button
-            type="button"
-            disabled={currentPage >= totalPages}
-            onClick={() => handlePageChange(Math.min(totalPages, currentPage + 1))}
-            className="px-1.5 py-0.5 rounded hover:bg-zinc-800 disabled:opacity-30 cursor-pointer"
-          >
-            ›
-          </button>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// 3:4 Vertical Preview Modal Component with Zoom Controls, 3:4 Corner Resizing & View State Persistence
-const FilePreviewModal = ({ 
-  file, 
-  allFiles, 
-  onClose, 
-  onSelectFile, 
-  previewWidth, 
-  setPreviewWidth, 
-  sidebarWidth = 384, 
-  isSidebarOpen = false,
-  getFileViewState,
-  saveFileViewState,
-  onDeleteFile,
-  onPasteFiles,
-  activeSection,
-  onSelectSection,
-  isDragTarget = false
-}) => {
-  const [contentZoom, setContentZoom] = useState(() => (getFileViewState ? getFileViewState(file?.id)?.zoom || 1 : 1));
-  const [isResizing, setIsResizing] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [contextMenu, setContextMenu] = useState(null); // { x, y }
-  const textContainerRef = useRef(null);
-  const imageContainerRef = useRef(null);
-
-  // Sync zoom state with file view state
-  const handleZoomUpdate = (newZoom) => {
-    setContentZoom(newZoom);
-    if (saveFileViewState && file?.id) {
-      saveFileViewState(file.id, { zoom: newZoom });
-    }
-  };
-
-  // Close context menu on outside click
-  useEffect(() => {
-    const handleClick = () => setContextMenu(null);
-    window.addEventListener('click', handleClick);
-    return () => window.removeEventListener('click', handleClick);
-  }, []);
-
-  // Restore scroll positions on file change
-  useEffect(() => {
-    const saved = getFileViewState ? getFileViewState(file?.id) : {};
-    if (textContainerRef.current && saved?.textScrollTop !== undefined) {
-      textContainerRef.current.scrollTop = saved.textScrollTop;
-    }
-    if (imageContainerRef.current) {
-      if (saved?.imageScrollTop !== undefined) imageContainerRef.current.scrollTop = saved.imageScrollTop;
-      if (saved?.imageScrollLeft !== undefined) imageContainerRef.current.scrollLeft = saved.imageScrollLeft;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file?.id]);
-
-  // Copy text content to clipboard
-  const handleCopyText = async () => {
-    if (!file?.textContent) return;
-    try {
-      await navigator.clipboard.writeText(file.textContent);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy text:', err);
-    }
-  };
-
-  // Paste screenshot / image / text from clipboard
-  const handlePasteClipboard = async () => {
-    setContextMenu(null);
-    try {
-      const files = await readClipboardAsFiles();
-      if (files && files.length > 0) {
-        if (onPasteFiles) onPasteFiles(files);
-      } else {
-        alert('Clipboard is empty. Copy some text or capture a screenshot (Win+Shift+S or PrtScn) and press Ctrl+V to paste!');
-      }
-    } catch {
-      alert('Press Ctrl+V anywhere on the screen to paste text or screenshots directly!');
-    }
-  };
-
-
-
-  // Alt + and Alt - keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.altKey && (e.key === '+' || e.key === '=' || e.key === 'Add')) {
-        e.preventDefault();
-        setContentZoom(prev => {
-          const next = Math.min(3.0, +(prev + 0.2).toFixed(1));
-          if (saveFileViewState && file?.id) saveFileViewState(file.id, { zoom: next });
-          return next;
-        });
-      } else if (e.altKey && (e.key === '-' || e.key === '_' || e.key === 'Subtract')) {
-        e.preventDefault();
-        setContentZoom(prev => {
-          const next = Math.max(0.4, +(prev - 0.2).toFixed(1));
-          if (saveFileViewState && file?.id) saveFileViewState(file.id, { zoom: next });
-          return next;
-        });
-      } else if (e.altKey && (e.key === '0')) {
-        e.preventDefault();
-        setContentZoom(1);
-        if (saveFileViewState && file?.id) saveFileViewState(file.id, { zoom: 1 });
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [file?.id, saveFileViewState]);
-
-  if (!file) return null;
-  const currentIndex = allFiles.findIndex(f => f.id === file.id);
-  
-  const handlePrev = () => {
-    if (currentIndex > 0) onSelectFile(allFiles[currentIndex - 1]);
-  };
-  const handleNext = () => {
-    if (currentIndex < allFiles.length - 1) onSelectFile(allFiles[currentIndex + 1]);
-  };
-
-  const handleZoomIn = () => {
-    const next = Math.min(3.0, +(contentZoom + 0.2).toFixed(1));
-    handleZoomUpdate(next);
-  };
-
-  const handleZoomOut = () => {
-    const next = Math.max(0.4, +(contentZoom - 0.2).toFixed(1));
-    handleZoomUpdate(next);
-  };
-
-  const handleZoomReset = () => {
-    handleZoomUpdate(1);
-  };
-
-  const handleTextScroll = (e) => {
-    if (saveFileViewState && file?.id) {
-      saveFileViewState(file.id, { textScrollTop: e.currentTarget.scrollTop });
-    }
-  };
-
-  const handleImageScroll = (e) => {
-    if (saveFileViewState && file?.id) {
-      saveFileViewState(file.id, { 
-        imageScrollTop: e.currentTarget.scrollTop,
-        imageScrollLeft: e.currentTarget.scrollLeft
-      });
-    }
-  };
-
-  const getFileIcon = (type) => {
-    switch (type) {
-      case 'image': return <FileImage className="w-4 h-4 text-purple-400" />;
-      case 'pdf': return <FileText className="w-4 h-4 text-red-400" />;
-      default: return <FileCode className="w-4 h-4 text-blue-400" />;
-    }
-  };
-
-  // High-performance Right-Side and Corner Drag Resizing (lag-free, smooth shrink & expand without merging)
-  const handleResizeMouseDown = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizing(true);
-    document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'se-resize';
-
-    const startX = e.clientX;
-    const startWidth = previewWidth;
-    let rafId = null;
-
-    const onMouseMove = (moveEvent) => {
-      moveEvent.preventDefault();
-      const dx = moveEvent.clientX - startX;
-      // Calculate max width so preview window stops before colliding with open Node Inspector
-      const sidebarLeftEdge = isSidebarOpen ? (sidebarWidth + 24) : 0;
-      const maxAvailableForPreview = isSidebarOpen
-        ? Math.max(260, window.innerWidth - sidebarLeftEdge - 24)
-        : Math.floor(window.innerWidth * 0.5);
-
-      const maxAllowedWidth = Math.min(Math.floor(window.innerWidth * 0.5), maxAvailableForPreview);
-      const newWidth = Math.max(480, Math.min(maxAllowedWidth, Math.round(startWidth + dx)));
-      
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => {
-        setPreviewWidth(newWidth);
-      });
-    };
-
-    const onMouseUp = () => {
-      setIsResizing(false);
-      document.body.style.userSelect = '';
-      document.body.style.cursor = '';
-      if (rafId) cancelAnimationFrame(rafId);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-
-    window.addEventListener('mousemove', onMouseMove, { passive: false });
-    window.addEventListener('mouseup', onMouseUp);
-  };
-
-  const previewHeight = Math.round(previewWidth * (4 / 3));
-
-  return (
-    <>
-      {isResizing && (
-        <div className="fixed inset-0 z-[99999] cursor-se-resize select-none pointer-events-auto bg-transparent" />
-      )}
-
-      {/* Right-Click Quick Actions Context Menu on Preview Window */}
-      {contextMenu && (
-        <div 
-          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
-          className="fixed z-[999999] bg-[#121215]/95 backdrop-blur-xl border border-zinc-700/80 rounded-xl shadow-[0_15px_35px_rgba(0,0,0,0.85)] p-1 min-w-[210px] animate-in fade-in zoom-in-95 duration-150"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={handlePasteClipboard}
-            className="w-full px-3 py-2 text-xs font-medium text-purple-200 hover:text-white hover:bg-purple-600/20 rounded-lg flex items-center space-x-2.5 transition-colors cursor-pointer"
-          >
-            <ClipboardPaste className="w-4 h-4 text-purple-400" />
-            <span>Paste from Clipboard (Ctrl+V)</span>
-          </button>
-          
-          <div className="h-px bg-zinc-800 my-1" />
-
-          <a
-            href={file.url}
-            download={file.name}
-            onClick={() => setContextMenu(null)}
-            className="w-full px-3 py-2 text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg flex items-center space-x-2.5 transition-colors cursor-pointer"
-          >
-            <Download className="w-4 h-4 text-zinc-400" />
-            <span className="truncate">Download {file.name}</span>
-          </a>
-        </div>
-      )}
-
-      <div 
-        style={{ width: `${previewWidth}px`, height: `${previewHeight}px` }}
-        onClick={() => onSelectSection && onSelectSection('preview')}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          setContextMenu({ x: e.clientX, y: e.clientY });
-        }}
-        className={`file-preview-modal fixed left-6 top-20 z-50 max-w-[50vw] max-h-[calc(100vh-5rem)] bg-[#0c0c0e]/95 backdrop-blur-2xl rounded-2xl shadow-[0_25px_60px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 transition-all ${
-          isDragTarget
-            ? 'border-2 border-purple-500 ring-2 ring-purple-500/80 shadow-[0_0_35px_rgba(168,85,247,0.5)]'
-            : (activeSection === 'preview'
-                ? 'border-2 border-purple-500 ring-2 ring-purple-500/50 shadow-[0_0_30px_rgba(168,85,247,0.45)]'
-                : 'border border-zinc-700/80 ring-1 ring-purple-500/20'
-              )
-        }`}
-      >
-
-      {/* Top Header with + and - Zoom Buttons, Copy Button, and Close */}
-      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-zinc-800 bg-zinc-900/90 flex-none select-none">
-        <div className="flex items-center space-x-2 min-w-0 pr-1">
-          {/* Reset Preview Size Button (top-left, dynamic color) */}
-          <button
-            type="button"
-            onClick={() => setPreviewWidth(480)}
-            className={`p-1.5 rounded-lg border flex items-center justify-center flex-shrink-0 transition-all duration-300 cursor-pointer ${
-              previewWidth === 480
-                ? 'bg-zinc-800/80 text-white border-zinc-700/60 hover:bg-zinc-700/80'
-                : 'bg-purple-500/20 text-purple-300 border-purple-500/50 ring-1 ring-purple-500/30 shadow-[0_0_14px_rgba(168,85,247,0.35)] hover:bg-purple-500/30'
-            }`}
-            title={previewWidth === 480 ? 'Preview is at default size' : 'Reset preview to default size'}
-          >
-            <RotateCcw className={`w-3.5 h-3.5 transition-transform duration-300 ${previewWidth !== 480 ? 'rotate-180 text-purple-400' : 'text-white'}`} />
-          </button>
-
-          <div className="p-1.5 bg-zinc-800 rounded-lg border border-zinc-700/50 flex-shrink-0">
-            {getFileIcon(file.type)}
-          </div>
-          <div className="min-w-0">
-            <h4 className="text-xs sm:text-sm font-medium text-white truncate max-w-[120px] sm:max-w-[170px]" title={file.name}>
-              {file.name}
-            </h4>
-            <span className="text-[10px] text-zinc-400 uppercase font-mono tracking-wider">
-              {file.type} • {file.sizeFormatted}
-            </span>
-          </div>
-        </div>
-
-        {/* Top Center-Right: Zoom, Paste & Copy Controls */}
-        <div className="flex items-center space-x-1.5 flex-shrink-0">
-          
-          {/* Quick Paste Text / Screenshot button */}
-          <button
-            type="button"
-            onClick={handlePasteClipboard}
-            className="px-2 py-1 text-xs font-medium bg-zinc-800/90 hover:bg-zinc-700 text-purple-300 hover:text-white rounded-lg transition-all flex items-center space-x-1 cursor-pointer border border-zinc-700/60 shadow-sm"
-            title="Paste Text or Screenshot from clipboard (Ctrl+V / Right-Click)"
-          >
-            <ClipboardPaste className="w-3.5 h-3.5 text-purple-400" />
-            <span className="hidden sm:inline">Paste</span>
-          </button>
-
-
-          
-          {/* 1-Click Copy Button for text/code files */}
-          {file.type === 'text' && (
-            <button
-              type="button"
-              onClick={handleCopyText}
-              className={`px-2 py-1 text-xs font-medium rounded-lg transition-all flex items-center space-x-1.5 cursor-pointer border ${
-                copied 
-                  ? 'bg-green-500/20 text-green-300 border-green-500/40 ring-1 ring-green-500/30' 
-                  : 'bg-zinc-800/90 hover:bg-zinc-700 text-zinc-300 hover:text-white border-zinc-700/60'
-              }`}
-              title="Copy entire text content (Ctrl+C / Click)"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-green-400" />
-                  <span>Copied!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5 text-purple-400" />
-                  <span>Copy</span>
-                </>
-              )}
-            </button>
-          )}
-
-          {file.type !== 'pdf' && (
-            <div className="flex items-center bg-zinc-950/80 border border-zinc-700/60 rounded-lg p-0.5 shadow-sm">
-              <button
-                type="button"
-                onClick={handleZoomOut}
-                className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer"
-                title="Zoom Out (Alt + -)"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={handleZoomReset}
-                className="px-1.5 text-[10px] text-zinc-300 font-mono hover:text-purple-300 cursor-pointer"
-                title="Reset Zoom (Alt + 0)"
-              >
-                {Math.round(contentZoom * 100)}%
-              </button>
-              <button
-                type="button"
-                onClick={handleZoomIn}
-                className="p-1 text-zinc-400 hover:text-white rounded hover:bg-zinc-800 transition-colors cursor-pointer"
-                title="Zoom In (Alt + +)"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-
-          {/* Top Right Cross to Close Preview */}
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-zinc-700 ml-1"
-            title="Close Preview"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Preview Content Body (Vertical 3:4 with Content Zoom & Scroll Persistence) */}
-      <div className="flex-grow overflow-hidden p-3 bg-zinc-950/70 flex items-center justify-center relative">
-        {file.type === 'image' && (
-          <div 
-            ref={imageContainerRef}
-            onScroll={handleImageScroll}
-            className="w-full h-full overflow-auto rounded-xl bg-[radial-gradient(#27272a_1px,transparent_1px)] [background-size:16px_16px] p-3 border border-zinc-800/60 flex items-center justify-center select-none"
-          >
-            <div 
-              style={{
-                transform: `scale(${contentZoom})`,
-                transformOrigin: 'center center',
-                transition: 'transform 0.15s ease-out'
-              }}
-              className="flex items-center justify-center flex-shrink-0"
-            >
-              <img 
-                src={file.url} 
-                alt={file.name} 
-                className="max-h-[350px] w-auto object-contain rounded-lg shadow-md select-none pointer-events-none"
-              />
-            </div>
-          </div>
-        )}
-
-        {file.type === 'pdf' && (
-          <div className="w-full h-full flex flex-col rounded-xl overflow-hidden border border-zinc-800 bg-zinc-900 relative">
-            <PdfViewer 
-              key={file.id}
-              url={file.url} 
-              fileId={file.id} 
-              zoom={contentZoom} 
-              initialViewState={getFileViewState ? getFileViewState(file.id) : {}}
-              onSaveViewState={saveFileViewState}
-            />
-          </div>
-        )}
-
-        {file.type === 'text' && (
-          <div 
-            ref={textContainerRef}
-            onScroll={handleTextScroll}
-            className="w-full h-full overflow-auto rounded-xl bg-zinc-900/95 border border-zinc-800 p-3.5 select-text cursor-text"
-          >
-            <pre 
-              style={{ 
-                transform: `scale(${contentZoom})`,
-                transformOrigin: 'top left',
-                width: `${100 / Math.max(0.4, contentZoom)}%`,
-                transition: 'transform 0.15s ease-out'
-              }}
-              className="font-mono text-xs text-zinc-200 whitespace-pre-wrap leading-relaxed selection:bg-purple-500 selection:text-white select-text cursor-text"
-            >
-              {file.textContent || 'No text content available'}
-            </pre>
-          </div>
-        )}
-      </div>
-
-      {/* Bottom Footer: Left (Navigation), Middle (Delete button), Right (Download) */}
-      <div className="p-2.5 border-t border-zinc-800 bg-zinc-900/90 flex items-center justify-between flex-none text-xs select-none">
-        {/* Left: Previous / Next Controls */}
-        <div className="flex items-center space-x-1 text-zinc-400 font-mono">
-          <button
-            type="button"
-            disabled={currentIndex <= 0}
-            onClick={handlePrev}
-            className="p-1 rounded hover:bg-zinc-800 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer"
-            title="Previous file"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span>{currentIndex + 1} / {allFiles.length}</span>
-          <button
-            type="button"
-            disabled={currentIndex >= allFiles.length - 1}
-            onClick={handleNext}
-            className="p-1 rounded hover:bg-zinc-800 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer"
-            title="Next file"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Middle: Delete File Button */}
-        <button
-          type="button"
-          onClick={() => onDeleteFile && onDeleteFile(file.id)}
-          className="px-2.5 py-1 text-xs font-medium text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 hover:border-red-500/40 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer shadow-sm"
-          title="Delete this file"
-        >
-          <Trash2 className="w-3.5 h-3.5 text-red-400" />
-          <span>Delete</span>
-        </button>
-
-        {/* Right / Shifted Left: Download File Button */}
-        <div className="flex items-center mr-12 sm:mr-16">
-          <a
-            href={file.url}
-            download={file.name}
-            className="px-2.5 py-1 text-xs font-medium text-zinc-300 hover:text-white bg-zinc-800/90 hover:bg-zinc-700 rounded-lg transition-colors border border-zinc-700/60 flex items-center space-x-1.5 shadow-sm cursor-pointer"
-            title="Download file"
-          >
-            <Download className="w-3.5 h-3.5 text-purple-400" />
-            <span className="hidden sm:inline">Download</span>
-          </a>
-        </div>
-      </div>
-
-
-      {/* Right-Side Edge Resize Handle (Expands rightward up to half the website) */}
-      <div
-        onMouseDown={handleResizeMouseDown}
-        className="absolute top-0 right-0 w-3.5 h-full cursor-ew-resize hover:bg-purple-500/40 transition-colors z-30 select-none"
-        title="Hold & drag right side to resize (up to half of the website)"
-      />
-
-      {/* Bottom-Right Corner Resize Grip */}
-      <div
-        onMouseDown={handleResizeMouseDown}
-        className="absolute bottom-0 right-0 w-8 h-8 cursor-se-resize flex items-end justify-end p-2 text-zinc-500 hover:text-purple-400 transition-colors z-40 group select-none"
-        title="Hold & drag corner to resize (up to half of the website, 3:4 ratio)"
-      >
-        <svg viewBox="0 0 10 10" className="w-3.5 h-3.5 fill-current group-hover:scale-125 transition-transform">
-          <line x1="8" y1="2" x2="2" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          <line x1="8" y1="5" x2="5" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          <line x1="8" y1="8" x2="8" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      </div>
-    </div>
-    </>
-  );
-};
-
-const BASE_WORKSPACE_PADDING = { top: 1800, left: 2000, right: 2200, bottom: 2200 };
 
 export default function ThoughtFlowApp() {
   const [view, setView] = useState('welcome');
@@ -3117,8 +718,6 @@ export default function ThoughtFlowApp() {
     treeDataRef.current = treeData;
   }, [treeData]);
 
-  const MAX_WORKSPACE_PADDING = 6000;
-
   // Helper to dynamically expand workspace padding when nodes approach boundaries (safely bounded)
   const expandWorkspaceForBounds = useCallback((nodes, dimMap = {}) => {
     // Never expand workspace or modify scroll positions during an active node drag
@@ -3308,19 +907,22 @@ export default function ThoughtFlowApp() {
       const pad = workspacePaddingRef.current;
 
       // Smooth viewport auto-scroll when dragging near viewport boundaries
-      const scrollMargin = 50;
-      const scrollSpeed = 12;
+      // Disabled in Read Mode to prevent glitching when dragging near Floating Media Window
+      if (!isReadMode) {
+        const scrollMargin = 50;
+        const scrollSpeed = 12;
 
-      if (e.clientX > rect.right - scrollMargin) {
-        canvasEl.scrollLeft += scrollSpeed;
-      } else if (e.clientX < rect.left + scrollMargin && canvasEl.scrollLeft > 0) {
-        canvasEl.scrollLeft = Math.max(0, canvasEl.scrollLeft - scrollSpeed);
-      }
+        if (e.clientX > rect.right - scrollMargin) {
+          canvasEl.scrollLeft += scrollSpeed;
+        } else if (e.clientX < rect.left + scrollMargin && canvasEl.scrollLeft > 0) {
+          canvasEl.scrollLeft = Math.max(0, canvasEl.scrollLeft - scrollSpeed);
+        }
 
-      if (e.clientY > rect.bottom - scrollMargin) {
-        canvasEl.scrollTop += scrollSpeed;
-      } else if (e.clientY < rect.top + scrollMargin && canvasEl.scrollTop > 0) {
-        canvasEl.scrollTop = Math.max(0, canvasEl.scrollTop - scrollSpeed);
+        if (e.clientY > rect.bottom - scrollMargin) {
+          canvasEl.scrollTop += scrollSpeed;
+        } else if (e.clientY < rect.top + scrollMargin && canvasEl.scrollTop > 0) {
+          canvasEl.scrollTop = Math.max(0, canvasEl.scrollTop - scrollSpeed);
+        }
       }
 
       // Convert current viewport mouse position directly to single world coordinate system
@@ -3429,7 +1031,7 @@ export default function ThoughtFlowApp() {
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
-  }, [zoomLevel, dimensionsMap, expandWorkspaceForBounds, pushSnapshotToUndo]);
+  }, [zoomLevel, dimensionsMap, expandWorkspaceForBounds, pushSnapshotToUndo, isReadMode]);
 
   // Change zoom level while preserving the viewport center (or cursor anchor) in world coordinates
   // Change zoom level while keeping the node structure in place (scaling without moving the structure or canvas)
@@ -4771,7 +2373,7 @@ export default function ThoughtFlowApp() {
 
         {/* Welcome Page Drag & Drop Subtle Indicator */}
         {isGlobalDraggingFile && (
-          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[999999] pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-999999 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
             <div className="px-5 py-2 rounded-full border-2 border-purple-500 shadow-[0_0_30px_rgba(168,85,247,0.45)] backdrop-blur-xl flex items-center space-x-2.5" style={{ backgroundColor: 'var(--tf-bg-surface)', color: 'var(--tf-text-primary)' }}>
               <div className="w-5 h-5 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-600 dark:text-purple-300">
                 <FolderOpen className="w-3 h-3" />
@@ -4809,7 +2411,7 @@ export default function ThoughtFlowApp() {
           </div>
 
           <form onSubmit={handleStartThinking} className="w-full relative group">
-            <div className="absolute -inset-1 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-2xl blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
+            <div className="absolute -inset-1 bg-linear-to-r from-purple-600 to-indigo-600 rounded-2xl blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
             <div className="relative flex items-center">
               <input
                 type="text"
@@ -4858,7 +2460,7 @@ export default function ThoughtFlowApp() {
         {/* Invalid Mind Map Error Modal on Welcome Page */}
         {importError && (
           <div 
-            className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
+            className="fixed inset-0 z-999999 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
             onClick={() => setImportError(null)}
           >
             <div 
@@ -4892,7 +2494,7 @@ export default function ThoughtFlowApp() {
       
       {/* Global Drag & Drop Context-Aware Badge Overlay */}
       {isGlobalDraggingFile && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[999999] pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-999999 pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
           <div className="px-5 py-2 rounded-full bg-[#121216]/95 border border-purple-500/80 shadow-[0_0_25px_rgba(168,85,247,0.45)] backdrop-blur-xl flex items-center space-x-2.5 text-white">
             <div className="w-5 h-5 rounded-full bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-300">
               <Upload className="w-3 h-3" />
@@ -4949,7 +2551,7 @@ export default function ThoughtFlowApp() {
             onClick={toggleReadMode}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition-all duration-300 cursor-pointer flex items-center space-x-2 border shadow-lg ${
               isReadMode
-                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 border-purple-400 text-white shadow-[0_0_20px_rgba(168,85,247,0.45)] ring-2 ring-purple-400/40'
+                ? 'bg-linear-to-r from-purple-600 to-indigo-600 border-purple-400 text-white shadow-[0_0_20px_rgba(168,85,247,0.45)] ring-2 ring-purple-400/40'
                 : 'bg-zinc-900/90 hover:bg-zinc-800 border-zinc-700/80 hover:border-purple-500 text-zinc-300 hover:text-white'
             }`}
             title={isReadMode ? "Exit Read Mode (Ctrl+Alt+R)" : "Enter Read Mode (Focus notes with floating photos - Ctrl+Alt+R)"}
@@ -5005,7 +2607,7 @@ export default function ThoughtFlowApp() {
             className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold tracking-wide transition-all duration-300 cursor-pointer flex items-center space-x-2 border shadow-lg ${
               isDarkMode
                 ? 'bg-zinc-900/90 hover:bg-zinc-800 border-zinc-700/80 hover:border-purple-500 text-zinc-300 hover:text-white'
-                : 'bg-gradient-to-r from-amber-100 to-orange-100 border-amber-300 text-amber-700 shadow-amber-200/30 hover:shadow-amber-300/40'
+                : 'bg-linear-to-r from-amber-100 to-orange-100 border-amber-300 text-amber-700 shadow-amber-200/30 hover:shadow-amber-300/40'
             }`}
             title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           >
@@ -5182,7 +2784,7 @@ export default function ThoughtFlowApp() {
                 <button
                   type="button"
                   onClick={() => handleExecuteFormat(formatDirection, formatLayout)}
-                  className="w-full py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs rounded-xl shadow-lg shadow-purple-900/30 transition-all flex items-center justify-center space-x-1.5 cursor-pointer active:scale-[0.98]"
+                  className="w-full py-2 bg-linear-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs rounded-xl shadow-lg shadow-purple-900/30 transition-all flex items-center justify-center space-x-1.5 cursor-pointer active:scale-[0.98]"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
                   <span>Apply Format</span>
@@ -5307,7 +2909,7 @@ export default function ThoughtFlowApp() {
       </header>
 
       {/* Main Workspace (Canvas + Energy Flow Hub + Sidebar) */}
-      <div className="flex-grow flex overflow-hidden relative">
+      <div className="grow flex overflow-hidden relative">
         
         {/* TOP-LEFT FLOATING IMPORT HUB (Hidden in Read Mode) */}
         {!isReadMode && (
@@ -5318,7 +2920,7 @@ export default function ThoughtFlowApp() {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               className={`
-                p-2 rounded-xl transition-colors cursor-pointer flex items-center justify-center shadow-lg border h-[38px] w-[38px]
+                p-2 rounded-xl transition-colors cursor-pointer flex items-center justify-center shadow-lg border h-38px w-38px
                 ${isUploading 
                   ? 'bg-purple-900/70 border-purple-400 text-white ring-2 ring-purple-500/40' 
                   : 'bg-zinc-900/90 hover:bg-zinc-800 border-zinc-700/80 hover:border-purple-500 text-zinc-200 hover:text-white'
@@ -5333,7 +2935,7 @@ export default function ThoughtFlowApp() {
             <button
               type="button"
               onClick={handleHubPasteClipboard}
-              className="p-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700/80 hover:border-purple-500 text-zinc-200 hover:text-white transition-colors cursor-pointer flex items-center justify-center shadow-lg h-[38px] w-[38px]"
+              className="p-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-700/80 hover:border-purple-500 text-zinc-200 hover:text-white transition-colors cursor-pointer flex items-center justify-center shadow-lg h-38px w-38px"
               title="Paste Text or Screenshot from clipboard (Ctrl+V)"
             >
               <ClipboardPaste className="w-4 h-4 text-purple-400" />
@@ -5351,7 +2953,7 @@ export default function ThoughtFlowApp() {
                   setActiveSection('importedFiles');
                 }}
                 className={`
-                  px-3.5 py-2 rounded-xl text-xs font-semibold tracking-wide transition-colors cursor-pointer flex items-center space-x-2.5 shadow-lg border h-[38px]
+                  px-3.5 py-2 rounded-xl text-xs font-semibold tracking-wide transition-colors cursor-pointer flex items-center space-x-2.5 shadow-lg border h-38px
                   ${effectiveActiveSection === 'importedFiles'
                     ? 'bg-zinc-900/95 border-purple-500 text-purple-100 ring-2 ring-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.35)]'
                     : (importedFiles.length > 0 
@@ -5402,15 +3004,15 @@ export default function ThoughtFlowApp() {
                           `}
                         >
                           <div className="flex items-center space-x-2 min-w-0 pr-1">
-                            {file.type === 'image' && <FileImage className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />}
-                            {file.type === 'pdf' && <FileText className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />}
-                            {file.type === 'text' && <FileCode className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />}
-                            <span className="truncate max-w-[140px]" title={file.name}>
+                            {file.type === 'image' && <FileImage className="w-3.5 h-3.5 text-purple-400 shrink-0" />}
+                            {file.type === 'pdf' && <FileText className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+                            {file.type === 'text' && <FileCode className="w-3.5 h-3.5 text-blue-400 shrink-0" />}
+                            <span className="truncate max-w-35" title={file.name}>
                               {file.name}
                             </span>
                           </div>
 
-                          <div className="flex items-center space-x-1 flex-shrink-0">
+                          <div className="flex items-center space-x-1 shrink-0">
                             <button
                               type="button"
                               onClick={(e) => {
@@ -5519,9 +3121,9 @@ export default function ThoughtFlowApp() {
             transition: isSidebarResizing ? 'none' : 'margin-right 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
           }}
           className={`
-            flex-grow relative overflow-auto no-scrollbar
+            grow relative overflow-auto no-scrollbar
             ${isCanvasDragging ? 'cursor-grabbing' : (draggingNodeId ? 'cursor-grabbing' : 'cursor-grab')}
-            bg-[radial-gradient(#27272a_1px,transparent_1px)] [background-size:24px_24px] select-none
+            bg-[radial-gradient(#27272a_1px,transparent_1px)] bg-size-[24px_24px] select-none
           `}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
@@ -5656,7 +3258,7 @@ export default function ThoughtFlowApp() {
 
         {/* Global Sidebar Resize Drag Overlay Mask */}
         {isSidebarResizing && (
-          <div className="fixed inset-0 z-[99999] cursor-ew-resize select-none pointer-events-auto bg-transparent" />
+          <div className="fixed inset-0 z-99999 cursor-ew-resize select-none pointer-events-auto bg-transparent" />
         )}
 
         {/* Node Inspector Sidebar */}
@@ -5721,7 +3323,7 @@ export default function ThoughtFlowApp() {
             <div className="flex flex-col h-full">
               {/* Multi-Selection Sidebar Header */}
               <div className="p-4 border-b border-zinc-800 bg-zinc-900/60 flex items-center justify-between">
-                <div className="flex-grow mr-2">
+                <div className="grow mr-2">
                   <div className="text-xs font-semibold text-purple-400 tracking-wider mb-1 flex items-center space-x-1.5">
                     <CheckSquare className="w-3.5 h-3.5" />
                     <span>MULTI-SELECTION ({selectedNodeIds.size} NODES)</span>
@@ -5734,7 +3336,7 @@ export default function ThoughtFlowApp() {
                     placeholder="Rename all selected nodes..."
                   />
                 </div>
-                <div className="flex items-center space-x-1.5 flex-shrink-0">
+                <div className="flex items-center space-x-1.5 shrink-0">
                   <button
                     type="button"
                     onClick={handleBulkDeleteNodes}
@@ -5755,7 +3357,7 @@ export default function ThoughtFlowApp() {
               </div>
 
               {/* Multi-selection summary content */}
-              <div className="flex-grow p-5 text-zinc-400 space-y-4 overflow-y-auto">
+              <div className="grow p-5 text-zinc-400 space-y-4 overflow-y-auto">
                 <div className="p-3.5 bg-purple-500/10 border border-purple-500/30 rounded-xl text-xs space-y-1.5 text-purple-200">
                   <p className="font-semibold text-purple-300 flex items-center space-x-1.5">
                     <CheckSquare className="w-4 h-4" />
@@ -5794,7 +3396,7 @@ export default function ThoughtFlowApp() {
               {/* Sidebar Header (Normal Mode Only; completely removed in Read Mode) */}
               {!isReadMode && (
                 <div className="p-4 border-b border-zinc-800 bg-zinc-900/60 flex items-center justify-between">
-                  <div className="flex-grow mr-2">
+                  <div className="grow mr-2">
                     <div className="text-xs font-semibold text-zinc-500 tracking-wider mb-1 truncate">
                       {activeNode.id === treeData?.id
                         ? 'Root Node'
@@ -5808,7 +3410,7 @@ export default function ThoughtFlowApp() {
                       placeholder="Node title..."
                     />
                   </div>
-                  <div className="flex items-center space-x-1.5 flex-shrink-0">
+                  <div className="flex items-center space-x-1.5 shrink-0">
                     {activeNode.id !== treeData?.id && (
                       <button
                         type="button"
@@ -5877,7 +3479,7 @@ export default function ThoughtFlowApp() {
               )}
 
               {/* Sidebar Content (Preserves Notes and Photos Preview state across tab switches) */}
-              <div className="flex-grow p-4 overflow-hidden relative">
+              <div className="grow p-4 overflow-hidden relative">
                 <div className={`w-full h-full flex-col ${isReadMode || sidebarTab === 'notes' ? 'flex' : 'hidden'}`}>
                   <RichTextEditor 
                     key={`notes-${activeNode.id}`} 
@@ -5967,7 +3569,7 @@ export default function ThoughtFlowApp() {
                 {/* Hexagon SVG */}
                 <svg 
                   viewBox="0 0 42 36" 
-                  className="w-[42px] h-[36px] filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
+                  className="w-42px h-36px filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
                 >
                   <polygon 
                     points="21,2 39,10 39,26 21,34 3,26 3,10" 
@@ -5999,13 +3601,13 @@ export default function ThoughtFlowApp() {
                   title="Hold & drag to move this box anywhere on the screen"
                 >
                   <div className="flex items-center space-x-2 overflow-hidden mr-2">
-                    <GripHorizontal className="w-4 h-4 text-zinc-500 group-hover:text-purple-400 transition-colors flex-shrink-0" />
-                    <GitBranch className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                    <GripHorizontal className="w-4 h-4 text-zinc-500 group-hover:text-purple-400 transition-colors shrink-0" />
+                    <GitBranch className="w-4 h-4 text-purple-400 shrink-0" />
                     <span className="truncate">Branching from: <strong className="text-purple-200 font-mono tracking-wide">{activeNode.text || 'Untitled'}</strong></span>
                   </div>
 
                   {/* Direction Selector Switcher */}
-                  <div className="flex items-center space-x-1 bg-zinc-950 p-0.5 rounded-lg border border-zinc-800 text-[11px] no-drag flex-shrink-0">
+                  <div className="flex items-center space-x-1 bg-zinc-950 p-0.5 rounded-lg border border-zinc-800 text-[11px] no-drag shrink-0">
                     <button
                       type="button"
                       onClick={() => setActiveCreationDirection('bottom')}
@@ -6041,7 +3643,7 @@ export default function ThoughtFlowApp() {
                     value={newThoughtText}
                     onChange={(e) => setNewThoughtText(e.target.value)}
                     placeholder={activeCreationDirection === 'right' ? "Enter concept to connect on the right (→)..." : "Enter concept to connect below (↓)..."}
-                    className="flex-grow bg-black/60 border border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all text-sm placeholder:text-zinc-500 font-mono"
+                    className="grow bg-black/60 border border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all text-sm placeholder:text-zinc-500 font-mono"
                     autoFocus
                   />
                   <button 
@@ -6076,7 +3678,7 @@ export default function ThoughtFlowApp() {
                   {/* Hexagon SVG */}
                   <svg 
                     viewBox="0 0 42 36" 
-                    className="w-[42px] h-[36px] filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
+                    className="w-10.5 h-9 filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
                   >
                     <polygon 
                       points="21,2 39,10 39,26 21,34 3,26 3,10" 
@@ -6104,7 +3706,7 @@ export default function ThoughtFlowApp() {
       {/* Delete Confirmation Warning Modal for Parent Nodes with Children */}
       {nodeToDelete && (
         <div 
-          className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
+          className="fixed inset-0 z-999999 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
           onClick={() => setNodeToDelete(null)}
         >
           <div 
@@ -6112,10 +3714,10 @@ export default function ThoughtFlowApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start space-x-4">
-              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 flex-shrink-0">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 shrink-0">
                 <AlertTriangle className="w-6 h-6" />
               </div>
-              <div className="space-y-2 flex-grow min-w-0">
+              <div className="space-y-2 grow min-w-0">
                 <h3 className="text-lg font-semibold text-white tracking-wide">
                   Delete Node & Branches?
                 </h3>
@@ -6152,7 +3754,7 @@ export default function ThoughtFlowApp() {
       {/* Clear Mind Map Unsaved Changes Warning Modal */}
       {showClearWarningModal && (
         <div 
-          className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
+          className="fixed inset-0 z-999999 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
           onClick={() => setShowClearWarningModal(false)}
         >
           <div 
@@ -6160,10 +3762,10 @@ export default function ThoughtFlowApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start space-x-4">
-              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 flex-shrink-0">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 shrink-0">
                 <AlertTriangle className="w-6 h-6" />
               </div>
-              <div className="space-y-2 flex-grow min-w-0">
+              <div className="space-y-2 grow min-w-0">
                 <h3 className="text-lg font-semibold text-white tracking-wide">
                   Unsaved Changes
                 </h3>
@@ -6200,7 +3802,7 @@ export default function ThoughtFlowApp() {
       {/* Import Unsaved Changes Warning Modal */}
       {showImportWarningModal && (
         <div 
-          className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
+          className="fixed inset-0 z-999999 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
           onClick={() => setShowImportWarningModal(false)}
         >
           <div 
@@ -6208,10 +3810,10 @@ export default function ThoughtFlowApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start space-x-4">
-              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 flex-shrink-0">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 shrink-0">
                 <AlertTriangle className="w-6 h-6" />
               </div>
-              <div className="space-y-2 flex-grow min-w-0">
+              <div className="space-y-2 grow min-w-0">
                 <h3 className="text-lg font-semibold text-white tracking-wide">
                   Import another note?
                 </h3>
@@ -6245,7 +3847,7 @@ export default function ThoughtFlowApp() {
       {/* Invalid Mind Map Error Modal */}
       {importError && (
         <div 
-          className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
+          className="fixed inset-0 z-999999 flex items-center justify-center bg-black/75 backdrop-blur-sm animate-in fade-in duration-200 select-none p-4"
           onClick={() => setImportError(null)}
         >
           <div 
