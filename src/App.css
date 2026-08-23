@@ -1,0 +1,553 @@
+/* Mind Map Free-Form Canvas & Node Styles */
+.mind-map-root {
+  position: relative;
+  width: 4800px;
+  height: 3600px;
+  min-width: 4800px;
+  min-height: 3600px;
+}
+
+.mind-map-node {
+  touch-action: none;
+  user-select: none;
+}
+
+/* Multi-Selection Tool Cursor Mode */
+html.mindmap-selection-mode,
+html.mindmap-selection-mode body,
+html.mindmap-selection-mode body * {
+  cursor: crosshair !important;
+}
+
+/* Hide scrollbar for clean canvas look */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Rich text editor styling */
+.rich-text-content:empty:before {
+  content: attr(data-placeholder);
+  color: #71717a;
+  pointer-events: none;
+  display: block;
+}
+
+.rich-text-content ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.rich-text-content ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* 3:4 Aspect Ratio Container */
+.preview-box-3-4 {
+  aspect-ratio: 3 / 4;
+  max-height: calc(100vh - 6rem);
+}
+
+
+/* ==========================================================================
+   LIGHT MODE THEME OVERRIDES
+   All rules below only apply when [data-theme="light"] is set on <html>
+   ========================================================================== */
+
+/* ---- Main App Shell ---- */
+[data-theme="light"] .tf-app-shell {
+  background-color: var(--tf-bg-app) !important;
+  color: var(--tf-text-primary) !important;
+}
+
+/* ---- Header / Top Toolbar ---- */
+[data-theme="light"] header,
+[data-theme="light"] .tf-header {
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-color: rgba(148, 163, 184, 0.3) !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04);
+}
+
+/* Logo text */
+[data-theme="light"] header .text-white,
+[data-theme="light"] header span.text-white {
+  color: #1e293b !important;
+}
+
+/* Header buttons - normal state */
+[data-theme="light"] header button {
+  color: #334155 !important;
+}
+[data-theme="light"] header button:hover {
+  color: #0f172a !important;
+}
+
+/* Header toolbar group backgrounds */
+[data-theme="light"] header .bg-zinc-900\/90,
+[data-theme="light"] header .bg-zinc-900 {
+  background: rgba(241, 245, 249, 0.85) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+}
+
+[data-theme="light"] header .bg-zinc-900\/90 button,
+[data-theme="light"] header .bg-zinc-900 button {
+  color: #475569 !important;
+}
+[data-theme="light"] header .bg-zinc-900\/90 button:hover,
+[data-theme="light"] header .bg-zinc-900 button:hover {
+  background: rgba(226, 232, 240, 0.8) !important;
+  color: #0f172a !important;
+}
+
+/* Header button borders */
+[data-theme="light"] header .border-zinc-800,
+[data-theme="light"] header .border-zinc-800\/80 {
+  border-color: rgba(148, 163, 184, 0.25) !important;
+}
+
+/* Header dividers */
+[data-theme="light"] header .bg-zinc-800 {
+  background-color: rgba(148, 163, 184, 0.3) !important;
+}
+
+/* Purple icon tints in header remain purple */
+[data-theme="light"] header .text-purple-400 {
+  color: #7c3aed !important;
+}
+
+/* Header purple accent buttons (Read Mode ON, active format, etc.) keep their purple styling */
+
+/* Undo/Redo disabled state */
+[data-theme="light"] header button:disabled,
+[data-theme="light"] header button[disabled] {
+  color: #94a3b8 !important;
+  opacity: 0.5;
+}
+
+/* Theme toggle & zoom buttons */
+[data-theme="light"] header button.bg-zinc-900:not([class*="purple"]):not([class*="gradient"]):not([class*="red"]):not([class*="emerald"]) {
+  background: rgba(241, 245, 249, 0.85) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+  color: #475569 !important;
+}
+[data-theme="light"] header button.bg-zinc-900:not([class*="purple"]):not([class*="gradient"]):not([class*="red"]):not([class*="emerald"]):hover {
+  background: rgba(226, 232, 240, 0.9) !important;
+  color: #1e293b !important;
+}
+
+/* Read Mode path indicator */
+[data-theme="light"] header .bg-zinc-900\/95 {
+  background: rgba(241, 245, 249, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+}
+[data-theme="light"] header .bg-zinc-900\/95 .text-white {
+  color: #1e293b !important;
+}
+[data-theme="light"] header .bg-zinc-900\/95 .text-zinc-200 {
+  color: #334155 !important;
+}
+[data-theme="light"] header .bg-zinc-900\/95 .text-zinc-400 {
+  color: #64748b !important;
+}
+
+/* ---- Canvas ---- */
+[data-theme="light"] main.flex-grow {
+  background: var(--tf-bg-app) !important;
+  background-image: radial-gradient(var(--tf-canvas-dot) 1px, transparent 1px) !important;
+  background-size: 24px 24px !important;
+}
+
+/* ---- Node Cards ---- */
+[data-theme="light"] .mind-map-node .bg-zinc-900\/95 {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 4px 16px rgba(15, 23, 42, 0.04) !important;
+}
+[data-theme="light"] .mind-map-node .bg-zinc-900\/95 .text-zinc-200,
+[data-theme="light"] .mind-map-node .bg-zinc-900\/95 span {
+  color: #1e293b !important;
+}
+[data-theme="light"] .mind-map-node .bg-zinc-900\/95:hover {
+  border-color: rgba(100, 116, 139, 0.5) !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1), 0 8px 24px rgba(15, 23, 42, 0.06) !important;
+}
+
+/* Selected node */
+[data-theme="light"] .mind-map-node .bg-purple-950\/90 {
+  background: rgba(237, 233, 254, 0.92) !important;
+  border-color: #8b5cf6 !important;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2), 0 4px 16px rgba(139, 92, 246, 0.15) !important;
+}
+[data-theme="light"] .mind-map-node .bg-purple-950\/90 .text-purple-100,
+[data-theme="light"] .mind-map-node .bg-purple-950\/90 span {
+  color: #4c1d95 !important;
+}
+
+/* Dragging node glow */
+[data-theme="light"] .mind-map-node .cursor-grabbing {
+  box-shadow: 0 12px 32px rgba(139, 92, 246, 0.25) !important;
+}
+
+/* Collapse/expand button */
+[data-theme="light"] .mind-map-node button.bg-zinc-900\/95 {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.4) !important;
+  color: #64748b !important;
+}
+[data-theme="light"] .mind-map-node button.bg-zinc-900\/95:hover {
+  background: rgba(241, 245, 249, 1) !important;
+  border-color: #8b5cf6 !important;
+  color: #7c3aed !important;
+}
+
+/* Collapsed purple button stays purple themed */
+[data-theme="light"] .mind-map-node button.bg-purple-600 {
+  background: #7c3aed !important;
+}
+
+/* Node indicator badges */
+[data-theme="light"] .mind-map-node .bg-zinc-900\/95[class*="rounded-lg"] {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+}
+
+/* Node "+" add buttons */
+[data-theme="light"] .mind-map-node button.bg-zinc-900\/80 {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+  color: #64748b !important;
+}
+[data-theme="light"] .mind-map-node button.bg-zinc-900\/80:hover {
+  background: rgba(237, 233, 254, 0.9) !important;
+  border-color: #8b5cf6 !important;
+  color: #7c3aed !important;
+}
+
+/* ---- Sidebar / Node Inspector ---- */
+[data-theme="light"] .tf-sidebar,
+[data-theme="light"] div[style*="marginRight"] + div,
+[data-theme="light"] aside {
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-color: rgba(148, 163, 184, 0.25) !important;
+}
+
+/* Sidebar: override all zinc-900 and zinc-950 backgrounds */
+[data-theme="light"] .border-l.border-zinc-800 {
+  border-color: rgba(148, 163, 184, 0.25) !important;
+}
+
+/* ---- Format / Select Popover Panels ---- */
+[data-theme="light"] .format-menu-container .bg-zinc-900\/95,
+[data-theme="light"] .select-menu-container .bg-zinc-900\/95 {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.1) !important;
+}
+[data-theme="light"] .format-menu-container .text-zinc-300,
+[data-theme="light"] .select-menu-container .text-zinc-300 {
+  color: #334155 !important;
+}
+[data-theme="light"] .format-menu-container .text-zinc-400,
+[data-theme="light"] .select-menu-container .text-zinc-400 {
+  color: #64748b !important;
+}
+[data-theme="light"] .format-menu-container .bg-zinc-950,
+[data-theme="light"] .select-menu-container .bg-zinc-950 {
+  background: rgba(241, 245, 249, 0.8) !important;
+  border-color: rgba(148, 163, 184, 0.25) !important;
+}
+[data-theme="light"] .format-menu-container .text-zinc-600,
+[data-theme="light"] .select-menu-container .text-zinc-600 {
+  color: #94a3b8 !important;
+}
+
+/* ---- Floating Media Window ---- */
+[data-theme="light"] .floating-media-window {
+  background: rgba(255, 255, 255, 0.92) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+}
+
+/* Floating media window header bar */
+[data-theme="light"] .floating-media-window .bg-zinc-950\/80,
+[data-theme="light"] .floating-media-window .bg-zinc-900 {
+  background: rgba(241, 245, 249, 0.85) !important;
+}
+
+/* Floating media window content area */
+[data-theme="light"] .floating-media-window .bg-zinc-950\/40 {
+  background: rgba(248, 250, 252, 0.6) !important;
+}
+
+/* ---- Modals & Dialogs ---- */
+[data-theme="light"] .bg-\[\#121215\] {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.12) !important;
+}
+
+/* Modal text */
+[data-theme="light"] .bg-\[\#121215\] .text-white {
+  color: #1e293b !important;
+}
+[data-theme="light"] .bg-\[\#121215\] .text-zinc-400,
+[data-theme="light"] .bg-\[\#121215\] .text-zinc-300 {
+  color: #475569 !important;
+}
+[data-theme="light"] .bg-\[\#121215\] .text-red-400 {
+  color: #dc2626 !important;
+}
+
+/* Modal backdrop */
+[data-theme="light"] .bg-black\/60 {
+  background: rgba(15, 23, 42, 0.3) !important;
+  backdrop-filter: blur(4px);
+}
+
+/* ---- File Preview Panel ---- */
+[data-theme="light"] .file-preview-modal {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.12) !important;
+}
+
+/* ---- Inspector Sidebar Content ---- */
+
+/* All sidebar/inspector zinc-900 backgrounds */
+[data-theme="light"] .bg-zinc-900\/60,
+[data-theme="light"] .bg-zinc-900\/50 {
+  background: rgba(248, 250, 252, 0.8) !important;
+}
+[data-theme="light"] .bg-zinc-900\/95 {
+  background: rgba(255, 255, 255, 0.92) !important;
+}
+[data-theme="light"] .bg-zinc-900\/80 {
+  background: rgba(248, 250, 252, 0.9) !important;
+}
+[data-theme="light"] .bg-zinc-900 {
+  background: rgba(248, 250, 252, 0.9) !important;
+}
+
+/* All zinc-950 backgrounds (toolbar sub-groups, inputs) */
+[data-theme="light"] .bg-zinc-950,
+[data-theme="light"] .bg-zinc-950\/80,
+[data-theme="light"] .bg-zinc-950\/70,
+[data-theme="light"] .bg-zinc-950\/40 {
+  background: rgba(241, 245, 249, 0.75) !important;
+}
+
+/* Full-bleed surfaces using hex bg */
+[data-theme="light"] .bg-\[\#0c0c0e\]\/95,
+[data-theme="light"] .bg-\[\#0c0c0e\]\/98 {
+  background: rgba(255, 255, 255, 0.95) !important;
+}
+
+[data-theme="light"] .bg-\[\#09090b\],
+[data-theme="light"] .bg-\[\#09090b\]\/90 {
+  background: var(--tf-bg-app) !important;
+}
+
+[data-theme="light"] .bg-\[\#121216\]\/95 {
+  background: rgba(255, 255, 255, 0.95) !important;
+}
+
+/* ---- Borders ---- */
+[data-theme="light"] .border-zinc-800,
+[data-theme="light"] .border-zinc-800\/80,
+[data-theme="light"] .border-zinc-800\/60 {
+  border-color: rgba(148, 163, 184, 0.25) !important;
+}
+[data-theme="light"] .border-zinc-700,
+[data-theme="light"] .border-zinc-700\/80,
+[data-theme="light"] .border-zinc-700\/60,
+[data-theme="light"] .border-zinc-700\/50 {
+  border-color: rgba(148, 163, 184, 0.3) !important;
+}
+
+/* ---- Text Colors ---- */
+[data-theme="light"] .text-white {
+  color: #1e293b !important;
+}
+[data-theme="light"] .text-zinc-100 {
+  color: #1e293b !important;
+}
+[data-theme="light"] .text-zinc-200 {
+  color: #334155 !important;
+}
+[data-theme="light"] .text-zinc-300 {
+  color: #475569 !important;
+}
+[data-theme="light"] .text-zinc-400 {
+  color: #64748b !important;
+}
+[data-theme="light"] .text-zinc-500 {
+  color: #94a3b8 !important;
+}
+[data-theme="light"] .text-zinc-600 {
+  color: #94a3b8 !important;
+}
+
+/* Preserve purple accent text readability */
+[data-theme="light"] .text-purple-100 {
+  color: #4c1d95 !important;
+}
+[data-theme="light"] .text-purple-300 {
+  color: #7c3aed !important;
+}
+[data-theme="light"] .text-purple-400 {
+  color: #7c3aed !important;
+}
+
+/* ---- Background Utilities ---- */
+[data-theme="light"] .bg-zinc-800 {
+  background-color: rgba(226, 232, 240, 0.6) !important;
+}
+[data-theme="light"] .bg-zinc-800\/60 {
+  background-color: rgba(241, 245, 249, 0.7) !important;
+}
+
+/* Hover backgrounds */
+[data-theme="light"] .hover\:bg-zinc-800:hover {
+  background-color: rgba(226, 232, 240, 0.8) !important;
+}
+
+/* ---- Inputs & Textareas ---- */
+[data-theme="light"] input[type="text"],
+[data-theme="light"] input[type="search"],
+[data-theme="light"] textarea {
+  background: rgba(248, 250, 252, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.3) !important;
+  color: #1e293b !important;
+}
+[data-theme="light"] input[type="text"]::placeholder,
+[data-theme="light"] input[type="search"]::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: #94a3b8 !important;
+}
+[data-theme="light"] input[type="text"]:focus,
+[data-theme="light"] input[type="search"]:focus,
+[data-theme="light"] textarea:focus {
+  border-color: #8b5cf6 !important;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.15) !important;
+}
+
+/* ---- Rich Text Content ---- */
+[data-theme="light"] .rich-text-content {
+  color: #1e293b !important;
+}
+[data-theme="light"] .rich-text-content:empty:before {
+  color: #94a3b8 !important;
+}
+
+/* ---- Selection highlight ---- */
+[data-theme="light"] .selection\:bg-purple-500\/30::selection,
+[data-theme="light"] ::selection {
+  background: rgba(139, 92, 246, 0.2) !important;
+  color: #1e293b !important;
+}
+
+/* ---- Shadows override ---- */
+[data-theme="light"] .shadow-inner {
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06) !important;
+}
+
+/* ---- Canvas Preview Dots ---- */
+[data-theme="light"] .bg-\[radial-gradient\(\#27272a_1px\2c transparent_1px\)\] {
+  background-image: radial-gradient(var(--tf-canvas-dot) 1px, transparent 1px) !important;
+}
+
+/* ---- Sidebar open/close buttons ---- */
+[data-theme="light"] .bg-zinc-900\/90[class*="rounded-xl"][class*="shadow"] {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* ---- Read Mode badge ---- */
+[data-theme="light"] .bg-emerald-400\/25 {
+  background: rgba(16, 185, 129, 0.15) !important;
+}
+[data-theme="light"] .text-emerald-300 {
+  color: #059669 !important;
+}
+
+/* ---- Purple gradient buttons (Apply Format, etc.) keep their vivid purple ---- */
+
+/* ---- Shadow overrides for soft light-mode feel ---- */
+[data-theme="light"] .shadow-\[0_25px_60px_rgba\(0\2c 0\2c 0\2c 0\.85\)\] {
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+}
+[data-theme="light"] .shadow-\[0_25px_70px_rgba\(0\2c 0\2c 0\2c 0\.85\)\] {
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06) !important;
+}
+[data-theme="light"] .shadow-\[0_20px_50px_rgba\(0\2c 0\2c 0\2c 0\.85\)\] {
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1) !important;
+}
+[data-theme="light"] .shadow-\[0_15px_35px_rgba\(0\2c 0\2c 0\2c 0\.8\)\] {
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08) !important;
+}
+[data-theme="light"] .shadow-\[0_10px_25px_rgba\(0\2c 0\2c 0\2c 0\.6\)\] {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08) !important;
+}
+[data-theme="light"] .shadow-\[0_6px_20px_-8px_rgba\(0\2c 0\2c 0\2c 0\.6\)\] {
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 4px 16px rgba(15, 23, 42, 0.04) !important;
+}
+
+/* ---- Ring overrides ---- */
+[data-theme="light"] .ring-purple-500\/30 {
+  --tw-ring-color: rgba(139, 92, 246, 0.2) !important;
+}
+
+/* ---- Scrollbar (for browsers that support it via CSS) ---- */
+[data-theme="light"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+[data-theme="light"] ::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.6);
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 4px;
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+/* ---- Import/Export button overrides ---- */
+[data-theme="light"] .bg-zinc-950\/60 {
+  background: rgba(241, 245, 249, 0.6) !important;
+}
+
+/* ---- Sidebar resize handle ---- */
+[data-theme="light"] .bg-purple-500\/10 {
+  background: rgba(139, 92, 246, 0.08) !important;
+}
+
+/* ---- Black overlay backgrounds ---- */
+[data-theme="light"] .bg-black\/40 {
+  background: rgba(15, 23, 42, 0.15) !important;
+}
+[data-theme="light"] .bg-black\/50 {
+  background: rgba(15, 23, 42, 0.2) !important;
+}
+
+/* ---- Empty / landing state ---- */
+[data-theme="light"] .bg-zinc-950 {
+  background-color: var(--tf-bg-app) !important;
+}
