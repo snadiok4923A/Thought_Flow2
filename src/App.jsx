@@ -2186,13 +2186,8 @@ export default function ThoughtFlowApp() {
     let currentX = thoughtBoxPosRef.current ? thoughtBoxPosRef.current.x : boxRect.left;
     let currentY = thoughtBoxPosRef.current ? thoughtBoxPosRef.current.y : boxRect.top;
 
-    if (!thoughtBoxPosRef.current) {
-      thoughtBoxPosRef.current = { x: currentX, y: currentY };
-      setThoughtBoxPos({ x: currentX, y: currentY });
-    }
-
-    const targetBoxWidth = isThoughtBoxCollapsed ? 42 : (box ? box.offsetWidth : Math.min(560, window.innerWidth * 0.92));
-    const targetBoxHeight = isThoughtBoxCollapsed ? 36 : (box ? box.offsetHeight : 118);
+    const targetBoxWidth = box ? box.offsetWidth : Math.min(560, window.innerWidth * 0.92);
+    const targetBoxHeight = box ? box.offsetHeight : 136;
 
     hexDragStateRef.current = {
       isDown: true,
@@ -2216,13 +2211,35 @@ export default function ThoughtFlowApp() {
 
     if (!hexDragStateRef.current.hasMoved && Math.hypot(dx, dy) > 6) {
       hexDragStateRef.current.hasMoved = true;
+      
+      const box = thoughtBoxRef.current;
+      if (box) {
+        // Immediately normalize layout coordinates for absolute positioning
+        box.style.left = '0px';
+        box.style.top = '0px';
+        box.style.bottom = 'auto';
+        box.style.right = 'auto';
+        box.style.transition = 'none';
+      }
+
+      if (!thoughtBoxPosRef.current) {
+        thoughtBoxPosRef.current = { x: initialBoxX, y: initialBoxY };
+        setThoughtBoxPos({ x: initialBoxX, y: initialBoxY });
+      }
     }
 
     if (hexDragStateRef.current.hasMoved) {
-      const maxX = Math.max(10, window.innerWidth - boxWidth - 10);
+      let minX = 10;
+      let maxX = Math.max(10, window.innerWidth - boxWidth - 10);
       const maxY = Math.max(10, window.innerHeight - boxHeight - 10);
 
-      const nextX = Math.max(10, Math.min(maxX, initialBoxX + dx));
+      // Relax horizontal constraints when collapsed so the handle can reach the edges
+      if (isThoughtBoxCollapsed) {
+        minX = 31 - boxWidth / 2;
+        maxX = window.innerWidth - 31 - boxWidth / 2;
+      }
+
+      const nextX = Math.max(minX, Math.min(maxX, initialBoxX + dx));
       const nextY = Math.max(10, Math.min(maxY, initialBoxY + dy));
 
       thoughtBoxPosRef.current = { x: nextX, y: nextY };
@@ -2248,44 +2265,39 @@ export default function ThoughtFlowApp() {
 
     if (hasMoved) {
       // Drag action completed: commit final position to state, keep current collapse state
+      const box = thoughtBoxRef.current;
+      if (box) box.style.transition = '';
+
       if (thoughtBoxPosRef.current) {
         setThoughtBoxPos({ ...thoughtBoxPosRef.current });
       }
     } else {
-      // Click/Tap action: Toggle open / collapsed with seamless coordinate translation
-      const box = thoughtBoxRef.current;
-      const boxRect = box ? box.getBoundingClientRect() : null;
-      const currentBoxX = thoughtBoxPosRef.current ? thoughtBoxPosRef.current.x : (boxRect ? boxRect.left : window.innerWidth / 2 - 280);
-      const currentBoxY = thoughtBoxPosRef.current ? thoughtBoxPosRef.current.y : (boxRect ? boxRect.top : window.innerHeight - 140);
+      // Click/Tap action: Toggle open / collapsed
+      if (thoughtBoxPosRef.current) {
+        let currentBoxX = thoughtBoxPosRef.current.x;
+        const currentBoxY = thoughtBoxPosRef.current.y;
+        
+        // Approximate height difference between expanded and collapsed state
+        const yShift = 100; 
+        let nextBoxY = currentBoxY;
+        
+        if (isThoughtBoxCollapsed) {
+          // Expanding: Ensure the newly visible wrapper strictly fits on the screen
+          const targetBoxWidth = Math.min(560, window.innerWidth * 0.92);
+          currentBoxX = Math.max(10, Math.min(window.innerWidth - targetBoxWidth - 10, currentBoxX));
+          nextBoxY = currentBoxY - yShift;
+        } else {
+          // Collapsing
+          nextBoxY = currentBoxY + yShift;
+        }
+        
+        nextBoxY = Math.max(10, Math.min(window.innerHeight - 36 - 10, nextBoxY));
 
-      const targetBoxWidth = Math.min(560, window.innerWidth * 0.92);
-      const targetBoxHeight = 118;
-      const hexWidth = 42;
-      const hexHeight = 36;
-
-      if (!isThoughtBoxCollapsed) {
-        // Collapsing: translate position so the standalone hexagon stays exactly at bottom center
-        const hexX = currentBoxX + (targetBoxWidth - hexWidth) / 2;
-        const hexY = currentBoxY + targetBoxHeight - hexHeight / 2;
-        const clampedHexX = Math.max(10, Math.min(window.innerWidth - hexWidth - 10, hexX));
-        const clampedHexY = Math.max(10, Math.min(window.innerHeight - hexHeight - 10, hexY));
-
-        thoughtBoxPosRef.current = { x: clampedHexX, y: clampedHexY };
-        setThoughtBoxPos({ x: clampedHexX, y: clampedHexY });
-        setIsThoughtBoxCollapsed(true);
-      } else {
-        // Expanding: translate position so the rectangular box expands cleanly above the hexagon
-        const hexX = currentBoxX;
-        const hexY = currentBoxY;
-        let nextBoxX = hexX - (targetBoxWidth - hexWidth) / 2;
-        let nextBoxY = hexY - targetBoxHeight + hexHeight / 2;
-        nextBoxX = Math.max(10, Math.min(window.innerWidth - targetBoxWidth - 10, nextBoxX));
-        nextBoxY = Math.max(10, Math.min(window.innerHeight - targetBoxHeight - 10, nextBoxY));
-
-        thoughtBoxPosRef.current = { x: nextBoxX, y: nextBoxY };
-        setThoughtBoxPos({ x: nextBoxX, y: nextBoxY });
-        setIsThoughtBoxCollapsed(false);
+        thoughtBoxPosRef.current = { x: currentBoxX, y: nextBoxY };
+        setThoughtBoxPos({ x: currentBoxX, y: nextBoxY });
       }
+      
+      setIsThoughtBoxCollapsed(prev => !prev);
     }
   };
 
@@ -3543,13 +3555,85 @@ export default function ThoughtFlowApp() {
             transform: 'translate3d(-50%, 0, 0)',
             zIndex: 9999
           }}
-          className={`select-none transition-opacity duration-150 ${
-            isThoughtBoxCollapsed ? 'w-auto' : 'thought-creation-box w-[92vw] max-w-xl'
-          }`}
+          className="select-none transition-opacity duration-150 flex flex-col items-center pointer-events-none thought-creation-box w-[92vw] max-w-xl"
         >
-          {isThoughtBoxCollapsed ? (
-            /* Collapsed State: Only Draggable Hexagonal Toggle Handle */
-            <div className="flex items-center justify-center">
+          {/* Expanded State Panel Content - Hidden when collapsed */}
+          <div className={`w-full origin-bottom transition-all duration-200 pointer-events-auto ${
+            isThoughtBoxCollapsed ? 'h-0 opacity-0 overflow-hidden scale-95 mb-0' : 'h-auto opacity-100 scale-100 mb-0'
+          }`}>
+            <div className="bg-zinc-900/95 border border-zinc-700/80 backdrop-blur-2xl rounded-2xl p-4 ring-1 ring-purple-500/30">
+              
+              {/* Draggable Header Handle */}
+              <div 
+                onMouseDown={handleThoughtBoxDragStart}
+                className="flex items-center justify-between text-xs md:text-sm pb-2 mb-2 border-b border-zinc-800/80 cursor-grab active:cursor-grabbing text-zinc-400 group"
+                title="Hold & drag to move this box anywhere on the screen"
+              >
+                <div className="flex items-center space-x-2 overflow-hidden mr-2">
+                  <GripHorizontal className="w-4 h-4 text-zinc-500 group-hover:text-purple-400 transition-colors shrink-0" />
+                  <GitBranch className="w-4 h-4 text-purple-400 shrink-0" />
+                  <span className="truncate">Branching from: <strong className="text-purple-200 font-mono tracking-wide">{activeNode.text || 'Untitled'}</strong></span>
+                </div>
+
+                {/* Direction Selector Switcher */}
+                <div className="flex items-center space-x-1 bg-zinc-950 p-0.5 rounded-lg border border-zinc-800 text-[11px] no-drag shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setActiveCreationDirection('bottom')}
+                    className={`px-2 py-0.5 rounded flex items-center space-x-1 transition-all cursor-pointer ${
+                      activeCreationDirection === 'bottom'
+                        ? 'bg-purple-600 text-white shadow font-medium'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                    title="Create new nodes below (Vertical Branch ↓)"
+                  >
+                    <ChevronDown size={12} />
+                    <span>Below</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveCreationDirection('right')}
+                    className={`px-2 py-0.5 rounded flex items-center space-x-1 transition-all cursor-pointer ${
+                      activeCreationDirection === 'right'
+                        ? 'bg-purple-600 text-white shadow font-medium'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                    title="Create new nodes to the right (Horizontal Branch →)"
+                  >
+                    <ArrowRight size={12} />
+                    <span>Right</span>
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleAddThought} className="flex items-center space-x-2">
+                <input
+                  type="text"
+                  value={newThoughtText}
+                  onChange={(e) => setNewThoughtText(e.target.value)}
+                  placeholder={activeCreationDirection === 'right' ? "Enter concept to connect on the right (→)..." : "Enter concept to connect below (↓)..."}
+                  className="grow bg-black/60 border border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all text-sm placeholder:text-zinc-500 font-mono pointer-events-auto"
+                  autoFocus={!isThoughtBoxCollapsed}
+                  disabled={isThoughtBoxCollapsed}
+                  tabIndex={isThoughtBoxCollapsed ? -1 : 0}
+                />
+                <button 
+                  type="submit"
+                  disabled={!newThoughtText.trim() || isThoughtBoxCollapsed}
+                  tabIndex={isThoughtBoxCollapsed ? -1 : 0}
+                  className="p-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:hover:bg-purple-600 text-white rounded-xl transition-all flex-shrink-0 shadow-lg shadow-purple-900/30 cursor-pointer pointer-events-auto"
+                  title={activeCreationDirection === 'right' ? "Add Node to Right (→)" : "Add Node Below (↓)"}
+                >
+                  <Plus className="w-5 h-5" />
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Hexagonal Handle Attached Exactly at Center of Bottom Border */}
+          <div className={`relative z-20 pointer-events-auto transition-transform duration-200 ${
+            isThoughtBoxCollapsed ? '' : '-mt-[18px]'
+          }`}>
               <div
                 role="button"
                 tabIndex={0}
@@ -3561,15 +3645,15 @@ export default function ThoughtFlowApp() {
                 className={`group relative flex items-center justify-center cursor-grab active:cursor-grabbing select-none transition-transform duration-150 hover:scale-110 active:scale-95 ${
                   isDraggingHex ? 'cursor-grabbing scale-105' : ''
                 }`}
-                title="Click to expand Node Maker (Branching) | Drag to reposition"
+                title={isThoughtBoxCollapsed ? "Click to expand Node Maker (Branching) | Drag to reposition" : "Click to collapse Node Maker | Drag to reposition"}
               >
                 {/* Glow ring */}
-                <div className={`absolute inset-0 rounded-full bg-purple-500/30 blur-md transition-opacity ${isDraggingHex ? 'opacity-100 bg-purple-500/60' : 'opacity-50 group-hover:opacity-100'}`} />
+                <div className={`absolute inset-0 rounded-full bg-purple-500/30 blur-md transition-opacity ${isDraggingHex ? 'opacity-100 bg-purple-500/60' : 'opacity-40 group-hover:opacity-100'}`} />
 
                 {/* Hexagon SVG */}
                 <svg 
                   viewBox="0 0 42 36" 
-                  className="w-42px h-36px filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
+                  className="w-[42px] h-[36px] filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
                 >
                   <polygon 
                     points="21,2 39,10 39,26 21,34 3,26 3,10" 
@@ -3583,123 +3667,16 @@ export default function ThoughtFlowApp() {
                   />
                 </svg>
 
-                {/* Centered expand icon */}
+                {/* Centered expand/collapse icon */}
                 <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
-                  <ChevronUp className="w-4 h-4 text-purple-300 group-hover:text-white transition-transform group-hover:-translate-y-0.5" strokeWidth={2.5} />
-                </div>
-              </div>
-            </div>
-          ) : (
-            /* Expanded State: Full Thought Creation Box with Attached Hexagonal Handle */
-            <div className="relative animate-in fade-in zoom-in-95 duration-150">
-              <div className="bg-zinc-900/95 border border-zinc-700/80 backdrop-blur-2xl rounded-2xl p-4 ring-1 ring-purple-500/30">
-                
-                {/* Draggable Header Handle */}
-                <div 
-                  onMouseDown={handleThoughtBoxDragStart}
-                  className="flex items-center justify-between text-xs md:text-sm pb-2 mb-2 border-b border-zinc-800/80 cursor-grab active:cursor-grabbing text-zinc-400 group"
-                  title="Hold & drag to move this box anywhere on the screen"
-                >
-                  <div className="flex items-center space-x-2 overflow-hidden mr-2">
-                    <GripHorizontal className="w-4 h-4 text-zinc-500 group-hover:text-purple-400 transition-colors shrink-0" />
-                    <GitBranch className="w-4 h-4 text-purple-400 shrink-0" />
-                    <span className="truncate">Branching from: <strong className="text-purple-200 font-mono tracking-wide">{activeNode.text || 'Untitled'}</strong></span>
-                  </div>
-
-                  {/* Direction Selector Switcher */}
-                  <div className="flex items-center space-x-1 bg-zinc-950 p-0.5 rounded-lg border border-zinc-800 text-[11px] no-drag shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setActiveCreationDirection('bottom')}
-                      className={`px-2 py-0.5 rounded flex items-center space-x-1 transition-all cursor-pointer ${
-                        activeCreationDirection === 'bottom'
-                          ? 'bg-purple-600 text-white shadow font-medium'
-                          : 'text-zinc-400 hover:text-white'
-                      }`}
-                      title="Create new nodes below (Vertical Branch ↓)"
-                    >
-                      <ChevronDown size={12} />
-                      <span>Below</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveCreationDirection('right')}
-                      className={`px-2 py-0.5 rounded flex items-center space-x-1 transition-all cursor-pointer ${
-                        activeCreationDirection === 'right'
-                          ? 'bg-purple-600 text-white shadow font-medium'
-                          : 'text-zinc-400 hover:text-white'
-                      }`}
-                      title="Create new nodes to the right (Horizontal Branch →)"
-                    >
-                      <ArrowRight size={12} />
-                      <span>Right</span>
-                    </button>
-                  </div>
-                </div>
-
-                <form onSubmit={handleAddThought} className="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    value={newThoughtText}
-                    onChange={(e) => setNewThoughtText(e.target.value)}
-                    placeholder={activeCreationDirection === 'right' ? "Enter concept to connect on the right (→)..." : "Enter concept to connect below (↓)..."}
-                    className="grow bg-black/60 border border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all text-sm placeholder:text-zinc-500 font-mono"
-                    autoFocus
-                  />
-                  <button 
-                    type="submit"
-                    disabled={!newThoughtText.trim()}
-                    className="p-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:hover:bg-purple-600 text-white rounded-xl transition-all flex-shrink-0 shadow-lg shadow-purple-900/30 cursor-pointer"
-                    title={activeCreationDirection === 'right' ? "Add Node to Right (→)" : "Add Node Below (↓)"}
-                  >
-                    <Plus className="w-5 h-5" />
-                  </button>
-                </form>
-              </div>
-
-              {/* Hexagonal Handle Attached Exactly at Center of Bottom Border */}
-              <div className="absolute left-1/2 -bottom-4 -translate-x-1/2 z-20">
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onPointerDown={handleHexPointerDown}
-                  onPointerMove={handleHexPointerMove}
-                  onPointerUp={handleHexPointerUp}
-                  onPointerCancel={handleHexPointerUp}
-                  style={{ touchAction: 'none' }}
-                  className={`group relative flex items-center justify-center cursor-grab active:cursor-grabbing select-none transition-transform duration-150 hover:scale-110 active:scale-95 ${
-                    isDraggingHex ? 'cursor-grabbing scale-105' : ''
-                  }`}
-                  title="Click to collapse Node Maker | Drag to reposition"
-                >
-                  {/* Glow ring */}
-                  <div className={`absolute inset-0 rounded-full bg-purple-500/30 blur-md transition-opacity ${isDraggingHex ? 'opacity-100 bg-purple-500/60' : 'opacity-40 group-hover:opacity-100'}`} />
-
-                  {/* Hexagon SVG */}
-                  <svg 
-                    viewBox="0 0 42 36" 
-                    className="w-10.5 h-9 filter drop-shadow-[0_6px_16px_rgba(0,0,0,0.95)] relative z-10"
-                  >
-                    <polygon 
-                      points="21,2 39,10 39,26 21,34 3,26 3,10" 
-                      className={`transition-colors duration-150 ${
-                        isDraggingHex
-                          ? 'fill-[#1c1427] stroke-purple-400'
-                          : 'fill-[#121216]/95 stroke-purple-500/80 group-hover:stroke-purple-300 group-hover:fill-[#1b1822]'
-                      }`}
-                      strokeWidth="1.8"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-
-                  {/* Centered collapse icon */}
-                  <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                  {isThoughtBoxCollapsed ? (
+                    <ChevronUp className="w-4 h-4 text-purple-300 group-hover:text-white transition-transform group-hover:-translate-y-0.5" strokeWidth={2.5} />
+                  ) : (
                     <ChevronDown className="w-4 h-4 text-purple-300 group-hover:text-white transition-transform group-hover:translate-y-0.5" strokeWidth={2.5} />
-                  </div>
+                  )}
                 </div>
               </div>
-            </div>
-          )}
+          </div>
         </div>
       )}
 

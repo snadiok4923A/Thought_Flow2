@@ -10,6 +10,6 @@ export default defineConfig({
     react(),
     babel({ presets: [reactCompilerPreset()] })
     ],
-    base: '/Thought_Flow/',
+    base: '/Thought_Flow2/',
 })
 
