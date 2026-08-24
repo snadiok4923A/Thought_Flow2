@@ -148,7 +148,7 @@ export default function ThoughtFlowApp() {
 
   // Canvas dragging state & persistent viewport view state
   const [isCanvasDragging, setIsCanvasDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const dragStartRef = useRef({ x: 0, y: 0 });
   const canvasRef = useRef(null);
   const canvasViewStateRef = useRef({ scrollLeft: null, scrollTop: null });
 
@@ -831,8 +831,8 @@ export default function ThoughtFlowApp() {
     const currentScrollLeft = canvasEl ? canvasEl.scrollLeft : 0;
     const currentScrollTop = canvasEl ? canvasEl.scrollTop : 0;
 
-    const startWorldMouseX = (currentScrollLeft + (e.clientX - rect.left)) / zoomLevel - pad.left;
-    const startWorldMouseY = (currentScrollTop + (e.clientY - rect.top)) / zoomLevel - pad.top;
+    const startWorldMouseX = (currentScrollLeft + (e.clientX - rect.left)) / (zoomLevelRef.current || 1) - pad.left;
+    const startWorldMouseY = (currentScrollTop + (e.clientY - rect.top)) / (zoomLevelRef.current || 1) - pad.top;
 
     activeDragNodeRef.current = {
       nodeId: node.id,
@@ -926,8 +926,8 @@ export default function ThoughtFlowApp() {
       }
 
       // Convert current viewport mouse position directly to single world coordinate system
-      const currentWorldMouseX = (canvasEl.scrollLeft + (e.clientX - rect.left)) / zoomLevel - pad.left;
-      const currentWorldMouseY = (canvasEl.scrollTop + (e.clientY - rect.top)) / zoomLevel - pad.top;
+      const currentWorldMouseX = (canvasEl.scrollLeft + (e.clientX - rect.left)) / (zoomLevelRef.current || 1) - pad.left;
+      const currentWorldMouseY = (canvasEl.scrollTop + (e.clientY - rect.top)) / (zoomLevelRef.current || 1) - pad.top;
 
       const deltaX = Math.round(currentWorldMouseX - startWorldMouseX);
       const deltaY = Math.round(currentWorldMouseY - startWorldMouseY);
@@ -1038,6 +1038,9 @@ export default function ThoughtFlowApp() {
   const changeZoom = useCallback((computeNewZoom) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    
+    // Prevent zooming if the canvas hasn't finished initial centering yet
+    if (canvasViewStateRef.current.scrollLeft === null) return;
 
     // Use pending target zoom & scroll if a zoom transition is already in flight (e.g. rapid clicks / wheel)
     const effectiveOldZoom = pendingZoomScrollRef.current
@@ -1248,6 +1251,8 @@ export default function ThoughtFlowApp() {
       pushSnapshotToUndo(cloneMindMapState(treeData, collapsedNodeIds));
     }
 
+    canvasViewStateRef.current = { scrollLeft: null, scrollTop: null };
+
     if (inputText.toLowerCase().includes('react')) {
       const initialPreset = ensureNodePositions(reactPresetTree);
       setTreeData(initialPreset);
@@ -1354,6 +1359,7 @@ export default function ThoughtFlowApp() {
     setView('welcome');
     setInputText('');
     setTreeData(null);
+    canvasViewStateRef.current = { scrollLeft: null, scrollTop: null };
     setActiveNode(null);
     setNodeToDelete(null);
     setShowImportWarningModal(false);
@@ -2334,7 +2340,7 @@ export default function ThoughtFlowApp() {
       setSelectedNodeIds(emptySet);
     }
     setIsCanvasDragging(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleMouseUp = () => {
@@ -2344,12 +2350,12 @@ export default function ThoughtFlowApp() {
   const handleMouseMove = (e) => {
     if (!isCanvasDragging || !canvasRef.current) return;
     const el = canvasRef.current;
-    const dx = e.clientX - dragStart.x;
-    const dy = e.clientY - dragStart.y;
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
 
     el.scrollLeft -= dx;
     el.scrollTop -= dy;
-    setDragStart({ x: e.clientX, y: e.clientY });
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
     canvasViewStateRef.current = {
       scrollLeft: el.scrollLeft,
       scrollTop: el.scrollTop
