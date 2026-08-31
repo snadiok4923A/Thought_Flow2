@@ -29,6 +29,7 @@ html.mindmap-selection-mode body * {
   scrollbar-width: none;
 }
 
+
 /* Rich text editor styling */
 .rich-text-content:empty:before {
   content: attr(data-placeholder);
