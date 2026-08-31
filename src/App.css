@@ -20,6 +20,7 @@ html.mindmap-selection-mode body * {
   cursor: crosshair !important;
 }
 
+
 /* Hide scrollbar for clean canvas look */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
