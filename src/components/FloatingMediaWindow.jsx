@@ -25,6 +25,7 @@ const FloatingMediaWindow = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
 
+  
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const resizeStartRef = useRef({ startX: 0, startY: 0, startWidth: 0, startHeight: 0 });
 
