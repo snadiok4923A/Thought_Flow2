@@ -47,6 +47,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 
+
 export default function ThoughtFlowApp() {
   const [view, setView] = useState('welcome');
   const [inputText, setInputText] = useState('');
