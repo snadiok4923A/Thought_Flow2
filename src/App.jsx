@@ -1419,8 +1419,12 @@ export default function ThoughtFlowApp() {
       }
       if (cancelled || !sync) return;
 
-      const { session, items, captured } = sync;
-      const patch = { connected: true };
+      const { session, items, captured, extensionLastSeen } = sync;
+      // "Connected" = backend reachable AND the extension is actually
+      // heartbeating (last ping < 90 s). ON alone never shows Yes.
+      const extFresh =
+        typeof extensionLastSeen === "number" && Date.now() - extensionLastSeen < 90000;
+      const patch = { connected: !!extFresh };
       if (typeof captured === 'number') patch.captured = captured;
       if (session) {
         const remoteDir = normalizeCaptureDirection(session.direction);
@@ -1437,6 +1441,20 @@ export default function ThoughtFlowApp() {
         }
         if (session.currentParentNodeId && session.currentParentNodeId !== state.currentParentId && state.enabled) {
           patch.currentParentId = session.currentParentNodeId;
+        }
+        // Keep the Start Node label in sync even when the board loads after
+        // the session was already adopted (panel ON before treeData existed).
+        if (
+          session.enabled &&
+          session.rootNodeId &&
+          state.startNodeId !== session.rootNodeId &&
+          !patch.startNodeText
+        ) {
+          const rn = findNodeById(treeDataRef.current, session.rootNodeId);
+          if (rn) {
+            patch.startNodeId = rn.id;
+            patch.startNodeText = rn.text || 'Untitled';
+          }
         }
       }
       if (Object.keys(patch).some((k) => state[k] !== patch[k])) {

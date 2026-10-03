@@ -122,7 +122,14 @@ router.get("/sync", async (req, res) => {
       store.listPending(req.query.limit),
       store.countApplied(),
     ]);
-    res.json({ session, items, captured });
+    res.json({
+      session,
+      items,
+      captured,
+      // ms epoch of the extension's last heartbeat — drives the website's
+      // "Connected" indicator (extension actually talking to this API).
+      extensionLastSeen: session.extensionHeartbeat || null,
+    });
   } catch (err) {
     console.error("[capture] sync error:", err.message);
     res.status(500).json({ message: "Could not sync captures." });

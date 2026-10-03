@@ -48,6 +48,17 @@
         <span class="value mono" id="capturedCount">–</span>
       </section>
 
+      <details id="diagnostics">
+        <summary>Diagnostics</summary>
+        <div class="diag-pipeline" id="diagPipeline">—</div>
+        <button id="runDiag" class="secondary">Run connection test</button>
+        <div class="diag-log" id="diagLog"></div>
+        <p class="diag-hint">
+          After changing extension files: reload it in chrome://extensions, then
+          refresh the ChatGPT tab.
+        </p>
+      </details>
+
       <details id="advanced">
         <summary>Settings</summary>
         <label for="apiBase">API base URL</label>

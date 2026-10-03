@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mock ChatGPT — ThoughtFlow capture harness</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; background: #0d0d11; color: #ececec; }
+      header { position: sticky; top: 0; display: flex; gap: 12px; align-items: center; padding: 10px 16px;
+               background: #17171d; border-bottom: 1px solid #2b2b33; z-index: 5; }
+      h1 { font-size: 14px; margin: 0; }
+      main { max-width: 760px; margin: 0 auto; padding: 24px 16px 40vh; }
+      article { padding: 14px 18px; border-radius: 14px; margin-bottom: 14px; background: #1a1a21; }
+      article[data-testid="conversation-turn-user"] { background: #26262f; }
+      .whitespace-pre-wrap { white-space: pre-wrap; }
+      .markdown { white-space: pre-wrap; line-height: 1.6; }
+      .toolbar { margin-top: 8px; display: flex; gap: 8px; }
+      .toolbar button { font-size: 11px; background: #2b2b33; color: #aaa; border: 0; border-radius: 6px; padding: 4px 8px; }
+      #stopBtn { position: fixed; right: 18px; bottom: 18px; background: #7c3aed; color: #fff; border: 0;
+                 border-radius: 999px; padding: 8px 14px; font-weight: 700; z-index: 9; }
+      #status { position: fixed; left: 12px; bottom: 12px; width: 380px; background: #12121a;
+                border: 1px solid #34343e; border-radius: 12px; padding: 10px 12px; font-size: 12px; z-index: 9; }
+      #status pre { margin: 6px 0 0; max-height: 150px; overflow: auto; font-size: 10px; color: #9ae6b4; white-space: pre-wrap; }
+      #verdict { font-weight: 800; margin-top: 6px; }
+      #verdict.pass { color: #48bb78; } #verdict.fail { color: #fc8181; }
+      #log { position: fixed; right: 12px; bottom: 12px; width: 420px; background: #0a0a0f;
+             border: 1px solid #34343e; border-radius: 12px; padding: 10px 12px; font-size: 10px;
+             max-height: 45vh; overflow: auto; color: #a0aec0; white-space: pre-wrap; z-index: 9; }
+      select, button.run { background: #2b2b33; color: #ececec; border: 1px solid #3f3f4a;
+                           border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+      button.run { background: #7c3aed; border-color: #7c3aed; font-weight: 700; }
+      button:disabled { opacity: 0.5; cursor: wait; }
+    </style>
+
+    <script>
+      // ================= chrome.* shim (harness only) =================
+      // Lets the REAL content scripts run outside a real extension.
+      // runtime.sendMessage mirrors background.js gate rules via REAL TFApi.
+      (function () {
+        const memLocal = {};
+        const memSync = {
+          captureEnabled: true,
+          stabilityMs: 1000,
+          apiBase: "http://localhost:5001/api",
+          token: "tf-local-capture-token",
+        };
+
+        window.__posts = []; // every POST the "background" performs
+        window.__drops = [];
+
+        function localGet(keys, cb) {
+          const out = {};
+          if (Array.isArray(keys)) keys.forEach((k) => (out[k] = memLocal[k]));
+          else if (keys && typeof keys === "object")
+            Object.keys(keys).forEach((k) => (out[k] = k in memLocal ? memLocal[k] : keys[k]));
+          else if (typeof keys === "string") out[keys] = memLocal[keys];
+          cb(out);
+        }
+
+        async function handleTrySend(payload) {
+          try {
+            if (!memSync.captureEnabled) return { drop: true, reason: "extension-off" };
+            let session;
+            try {
+              session = await TFApi.getSession();
+            } catch {
+              // API offline → queue semantics (here: counted as queued)
+              window.__posts.push({ queued: true, q: payload.question.slice(0, 40) });
+              return { accepted: true, queued: true };
+            }
+            if (!(session && session.enabled && (session.rootNodeId || session.currentParentNodeId))) {
+              window.__drops.push("website-off");
+              return { drop: true, reason: "website-off" };
+            }
+            const res = await TFApi.postCapture(payload);
+            window.__posts.push({
+              duplicate: !!res.duplicate,
+              q: payload.question,
+              a: payload.answer,
+            });
+            return { accepted: true, duplicate: !!res.duplicate };
+          } catch (e) {
+            window.__drops.push("http-" + (e && e.status));
+            return { drop: true, reason: "http-" + (e && e.status) };
+          }
+        }
+
+        window.chrome = {
+          storage: {
+            local: {
+              get: localGet,
+              set: (obj, cb) => {
+                Object.assign(memLocal, obj);
+                cb && cb();
+              },
+            },
+            sync: {
+              get: (defaults, cb) => cb(Object.assign({}, defaults, memSync)),
+              set: (obj, cb) => {
+                Object.assign(memSync, obj);
+                cb && cb();
+              },
+            },
+            onChanged: { addListener: () => {} },
+          },
+          runtime: {
+            lastError: null,
+            sendMessage: (msg, cb) => {
+              if (msg && msg.type === "TF_TRY_SEND") {
+                handleTrySend(msg.payload).then((r) => cb && cb(r));
+                return;
+              }
+              cb && cb(null);
+            },
+          },
+        };
+      })();
+    </script>
+  </head>
+
+  <body>
+    <header>
+      <h1>Mock ChatGPT — real capture scripts harness</h1>
+      <label>strategy
+        <select id="strategy">
+          <option value="classic">classic (author-role)</option>
+          <option value="testid">testid only</option>
+          <option value="article">article only</option>
+        </select>
+      </label>
+      <button class="run" id="runBtn" onclick="runFullTest()">Run Q+A test</button>
+      <span id="hint">ThoughtFlow panel must be ON with a start node.</span>
+    </header>
+
+    <main id="chat"></main>
+
+    <div id="status">
+      <div><strong>POSTs to backend:</strong> <span id="postCount">0</span></div>
+      <div><strong>Verdict:</strong><span id="verdict"> not run</span></div>
+      <pre id="posts"></pre>
+    </div>
+    <pre id="log"></pre>
+
+    <script src="../utils/api.js"></script>
+    <script src="../utils/debug.js"></script>
+    <script src="../content/selectors-chatgpt.js"></script>
+    <script src="../content/capture-core.js"></script>
+    <script>
+      // ================= DOM builders (mimic current ChatGPT markup) ==========
+      const chat = document.getElementById("chat");
+      let msgSeq = 0;
+
+      function applyStrategy() {
+        const s = document.getElementById("strategy").value;
+        if (s !== "classic")
+          document.querySelectorAll("[data-message-author-role]").forEach((el) => {
+            el.removeAttribute("data-message-author-role");
+            el.removeAttribute("data-message-id");
+          });
+        if (s === "article")
+          document.querySelectorAll("[data-testid]").forEach((el) => el.removeAttribute("data-testid"));
+      }
+
+      function addUser(text) {
+        const art = document.createElement("article");
+        art.setAttribute("data-testid", "conversation-turn-user");
+        const q = document.createElement("div");
+        q.setAttribute("data-testid", "user-message");
+        q.setAttribute("data-message-author-role", "user");
+        q.setAttribute("data-message-id", "user-" + ++msgSeq);
+        q.className = "whitespace-pre-wrap";
+        q.textContent = text;
+        art.appendChild(q);
+        chat.appendChild(art);
+        applyStrategy();
+        return q;
+      }
+
+      function addAssistantShell() {
+        const art = document.createElement("article");
+        art.setAttribute("data-testid", "conversation-turn-assistant");
+        const md = document.createElement("div");
+        md.setAttribute("data-message-author-role", "assistant");
+        md.setAttribute("data-message-id", "assistant-" + ++msgSeq);
+        md.className = "markdown";
+        art.appendChild(md);
+        chat.appendChild(art);
+
+        const stop = document.createElement("button");
+        stop.id = "stopBtn";
+        stop.setAttribute("data-testid", "stop-button");
+        stop.textContent = "■ Stop";
+        document.body.appendChild(stop);
+
+        applyStrategy();
+        return { art, md, stop };
+      }
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      // Stream the answer word-by-word, then "finish" (remove stop, add toolbar).
+      async function streamAnswer(md, art, stop, answer) {
+        const words = answer.split(" ");
+        for (let i = 0; i < words.length; i++) {
+          md.textContent += (i ? " " : "") + words[i];
+          await sleep(180);
+        }
+        await sleep(400);
+        stop.remove();
+        const tb = document.createElement("div");
+        tb.className = "toolbar";
+        tb.innerHTML = "<button>Copy</button><button>Good response</button>";
+        art.appendChild(tb);
+      }
+
+      async function runTurn(question, answer) {
+        addUser(question);
+        await sleep(600);
+        const { art, md, stop } = addAssistantShell();
+        await streamAnswer(md, art, stop, answer);
+      }
+
+      function renderStatus(verdict, ok) {
+        document.getElementById("postCount").textContent = String(window.__posts.length);
+        const v = document.getElementById("verdict");
+        v.textContent = " " + verdict;
+        v.className = ok ? "pass" : "fail";
+        document.getElementById("posts").textContent = JSON.stringify(
+          window.__posts.map((p) => ({ dup: p.duplicate, q: p.q, alen: p.a ? p.a.length : undefined })),
+          null,
+          1
+        );
+      }
+
+      // ================= THE TEST ==========================================
+      const A1 = "A computer is an electronic device that processes data by executing programs.";
+      const A2 = "Software is a collection of programs that tell hardware what to do.";
+
+      async function runFullTest() {
+        const btn = document.getElementById("runBtn");
+        btn.disabled = true;
+        window.__posts.length = 0;
+        window.__drops.length = 0;
+        renderStatus("running…", true);
+
+        await runTurn("What is a computer?", A1);
+        await sleep(7000); // stability + interval + POST + website poll
+        await runTurn("What is software?", A2);
+        await sleep(7000);
+
+        // Server-side dedupe: identical pair must come back duplicate:true
+        let dupOk = false;
+        try {
+          const res = await TFApi.postCapture({
+            source: "chatgpt",
+            conversationId: "",
+            question: "What is software?",
+            answer: A2,
+          });
+          dupOk = res.duplicate === true;
+        } catch (_) {}
+
+        const posts = window.__posts;
+        const ok =
+          posts.length === 2 &&
+          posts[0].a === A1 &&
+          posts[1].a === A2 &&
+          posts.every((p) => p.duplicate === false) &&
+          dupOk &&
+          window.__drops.length === 0;
+
+        renderStatus(
+          ok
+            ? "PASS — 2 pairs, exact text, 1× each, server dedupe ✓, baseline never posted"
+            : `FAIL — posts=${posts.length} drops=${JSON.stringify(window.__drops)} dup=${dupOk}`,
+          ok
+        );
+        btn.disabled = false;
+      }
+
+      // ================= bootstrap =========================================
+      function bootstrap() {
+        applyStrategy();
+        // Baseline conversation (older thread) — must NEVER be captured.
+        addUser("Old baseline question one?");
+        const art1 = document.createElement("article");
+        art1.setAttribute("data-testid", "conversation-turn-assistant");
+        art1.innerHTML =
+          '<div data-message-author-role="assistant" data-message-id="old-1" class="markdown">Old baseline answer one.</div>';
+        chat.appendChild(art1);
+        addUser("Old baseline question two?");
+        const art2 = document.createElement("article");
+        art2.setAttribute("data-testid", "conversation-turn-assistant");
+        art2.innerHTML =
+          '<div data-message-author-role="assistant" data-message-id="old-2" class="markdown">Old baseline answer two.</div>';
+        chat.appendChild(art2);
+        applyStrategy();
+
+        // Start the REAL capture engine with the harness overrides.
+        TFCapture.start(
+          Object.assign({}, window.TF_SELECTORS, {
+            isSupportedPage: () => true,
+            label: "ChatGPT (mock)",
+          })
+        );
+
+        // Live debug event feed from the real TFDebug ring buffer.
+        setInterval(() => {
+          window.chrome.storage.local.get(["tfDebugLog"], (r) => {
+            const events = (r.tfDebugLog || []).slice(-25).reverse();
+            document.getElementById("log").textContent = events
+              .map((e) => new Date(e.t).toLocaleTimeString() + "  " + e.e + (e.d ? " — " + e.d : ""))
+              .join("\n");
+          });
+        }, 700);
+      }
+
+      document.getElementById("strategy").addEventListener("change", () => {
+        // Reload with the chosen strategy to keep conditions clean.
+        location.search = "?strategy=" + document.getElementById("strategy").value;
+      });
+
+      const preset = new URLSearchParams(location.search).get("strategy");
+      if (preset) document.getElementById("strategy").value = preset;
+
+      bootstrap();
+    </script>
+  </body>
+</html>

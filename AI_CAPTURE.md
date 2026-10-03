@@ -49,6 +49,30 @@ Duplicate Q+A pairs are rejected (SHA-256 content fingerprint in the API +
 client-side seen-list in the extension), streaming answers are captured only once
 after the text is stable for `stabilityMs` (default 2000 ms).
 
+## Debugging a capture that never arrives
+
+1. Reload the extension in `chrome://extensions` after ANY file change, then
+   **refresh the ChatGPT tab** (content scripts only inject into pages loaded
+   afterwards — this is the most common reason nothing happens).
+2. Open the extension popup → **Diagnostics** → **Run connection test**.
+   It reports the exact broken link, e.g. `API unreachable`,
+   `invalid capture token`, `popup Capture is OFF`, `website panel is OFF`,
+   `no start node selected`, or `PIPELINE OK`.
+3. The same page shows the last 40 content/background events
+   (`content-loaded`, `scan … strategy=…`, `answer-seen`, `send`, `send-ok`,
+   `baseline-skip`, …) — no conversation text is ever logged. The current
+   ChatGPT selector strategy (`author-role`, `testid`, `article`, `none`) is
+   reported on every scan; `none` means ChatGPT changed its markup and only
+   `content/selectors-chatgpt.js` needs updating.
+4. The website panel's **Connected** reflects the extension's heartbeat
+   (< 90 s), not merely that the website is open.
+5. Local end-to-end harness (no real ChatGPT needed):
+   `node chrome-extension/test/serve.js` then open
+   `http://localhost:5099/test/mock-chatgpt.html` and press **Run Q+A test**.
+   It streams a mock answer through the real content scripts, real API and
+   real website poller, and shows a PASS/FAIL verdict (includes selector
+   strategy switching: classic / testid / article).
+
 ## Chrome extension popup
 
 - **Capture** — extension-level switch (website panel is the second switch; both must be ON)

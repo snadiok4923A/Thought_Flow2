@@ -189,6 +189,59 @@ details input {
   background: rgba(124, 58, 237, 0.4);
 }
 
+#diagnostics summary {
+  color: var(--purple);
+}
+
+.diag-pipeline {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.5;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.diag-pipeline.ok {
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #bbf7d0;
+}
+
+.diag-pipeline.bad {
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fecaca;
+}
+
+.diag-pipeline.pending {
+  border-color: rgba(168, 85, 247, 0.5);
+  color: #e9d5ff;
+}
+
+.diag-log {
+  margin-top: 8px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diag-hint {
+  margin: 8px 0 0;
+  font-size: 9px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 footer {
   border-top: 1px solid var(--border);
   padding: 8px 14px;

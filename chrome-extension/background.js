@@ -1,24 +1,29 @@
 // ThoughtFlow AI Capture — background service worker (MV3).
 // Receives completed Q+A pairs from content scripts, checks the website session
-// (capture ON + start node), forwards to POST /api/ai-capture, and retries on failure.
+// (capture ON + start node), forwards to POST /api/ai-capture, retries on failure,
+// and heartbeats the API so the website can show real extension connectivity.
 // Conversation text is never written to console logs.
 
-importScripts("utils/api.js");
+importScripts("utils/debug.js", "utils/api.js");
 
 const MAX_QUEUE = 50;
 const MAX_TRIES = 20;
+
+function dbg(event, detail) {
+  globalThis.TFDebug.log(event, detail);
+}
 
 // ---- Session gate -----------------------------------------------------------
 // The website panel owns capture state: it must be ON with a start node selected.
 async function sessionAllowsCapture() {
   try {
     const session = await TFApi.getSession();
-    return {
-      ok: !!(session && session.enabled && (session.rootNodeId || session.currentParentNodeId)),
-      session,
-    };
-  } catch {
+    const ok = !!(session && session.enabled && (session.rootNodeId || session.currentParentNodeId));
+    dbg("gate", ok ? "open" : `closed (enabled=${!!(session && session.enabled)} start=${(session && session.rootNodeId) || "-"})`);
+    return { ok, session, retry: false };
+  } catch (err) {
     // Server unreachable — do not drop the pair; queue it and retry later.
+    dbg("gate", `api-unreachable (${err && err.message})`);
     return { ok: false, retry: true };
   }
 }
@@ -56,13 +61,15 @@ async function flushQueue() {
   const remaining = [];
   for (const entry of queue) {
     if (!gate.ok) {
-      // Website capture switched off → drop (spec: OFF means no capture).
-      continue;
+      dbg("queue-drop", "website capture switched off");
+      continue; // OFF means no capture
     }
     try {
       const res = await TFApi.postCapture(entry.payload);
+      dbg("queue-retry-ok", res && res.duplicate ? "duplicate" : "applied");
       if (res && !res.duplicate) await bumpCounter();
-    } catch {
+    } catch (err) {
+      dbg("queue-retry-fail", `HTTP ${err && err.status}`);
       entry.tries = (entry.tries || 0) + 1;
       if (entry.tries < MAX_TRIES) remaining.push(entry);
     }
@@ -72,22 +79,31 @@ async function flushQueue() {
 
 async function handleCapture(payload) {
   const settings = await TFApi.getSettings();
-  if (!settings.captureEnabled) return { drop: true, reason: "extension-off" };
+  if (!settings.captureEnabled) {
+    dbg("reject", "extension capture OFF (popup)");
+    return { drop: true, reason: "extension-off" };
+  }
 
   const gate = await sessionAllowsCapture();
   if (gate.retry) {
     const q = await getQueue();
     q.push({ payload, tries: 0, at: Date.now() });
     await setQueue(q);
+    dbg("queued", `API offline, queue=${q.length}`);
     return { accepted: true, queued: true };
   }
-  if (!gate.ok) return { drop: true, reason: "website-off" };
+  if (!gate.ok) {
+    dbg("reject", "website session gate closed");
+    return { drop: true, reason: "website-off" };
+  }
 
   try {
     const res = await TFApi.postCapture(payload);
+    dbg("api", res && res.duplicate ? "200 duplicate" : "201 created");
     if (res && !res.duplicate) await bumpCounter();
     return { accepted: true, duplicate: !!(res && res.duplicate) };
   } catch (err) {
+    dbg("api-error", `HTTP ${err && err.status}`);
     if (err.status === 400 || err.status === 401) {
       // Permanent failure (validation/auth) — do not retry forever.
       return { drop: true, reason: err.status === 401 ? "auth" : "invalid" };
@@ -99,6 +115,50 @@ async function handleCapture(payload) {
   }
 }
 
+// ---- Heartbeat: proves extension ↔ API connectivity for the website --------
+async function heartbeat() {
+  try {
+    await TFApi.putSession({ extensionHeartbeat: Date.now() });
+  } catch {
+    /* API offline — website will show Connected: No */
+  }
+}
+
+// ---- One-click diagnostics for the popup ------------------------------------
+async function diagnose() {
+  const settings = await TFApi.getSettings();
+  let api = null;
+  try {
+    const h = await TFApi.health();
+    api = { ok: true, storage: h.storage };
+  } catch (err) {
+    api = { ok: false, status: err && err.status };
+  }
+  let session = null;
+  let sessionErr = null;
+  try {
+    session = await TFApi.getSession();
+  } catch (e) {
+    sessionErr = e && e.status;
+  }
+  const gate = !api.ok
+    ? "API unreachable"
+    : !settings.captureEnabled
+      ? "popup Capture is OFF"
+      : sessionErr === 401
+        ? "invalid capture token (popup Settings)"
+        : !session
+          ? "session unreadable"
+          : !session.enabled
+            ? "website panel is OFF"
+            : !(session.rootNodeId || session.currentParentNodeId)
+              ? "no start node selected in ThoughtFlow"
+              : "OK";
+  const { retryQueue = [] } = await chrome.storage.local.get("retryQueue");
+  const { tfDebugLog = [] } = await chrome.storage.local.get("tfDebugLog");
+  return { settings, api, session, gate, queue: retryQueue.length, events: tfDebugLog.slice(-15).reverse() };
+}
+
 // ---- Messaging ---------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
@@ -106,7 +166,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "TF_TRY_SEND") {
     handleCapture(msg.payload || {})
       .then(sendResponse)
-      .catch(() => sendResponse({ drop: true, reason: "error" }));
+      .catch((e) => {
+        dbg("send-fatal", (e && e.message) || "error");
+        sendResponse({ drop: true, reason: "error" });
+      });
     return true; // async
   }
 
@@ -114,6 +177,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     TFApi.health()
       .then((h) => sendResponse({ connected: true, ...h }))
       .catch(() => sendResponse({ connected: false }));
+    return true;
+  }
+
+  if (msg.type === "TF_DIAGNOSE") {
+    diagnose().then(sendResponse);
     return true;
   }
 
@@ -149,17 +217,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// Periodic retry for queued captures (also warms up after browser restart).
+// Periodic retry for queued captures + connectivity heartbeat.
 chrome.alarms.create("tf-retry", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "tf-retry") flushQueue();
+  if (alarm.name === "tf-retry") {
+    flushQueue();
+    heartbeat();
+  }
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
   await TFApi.setSettings({}); // seed defaults
+  dbg("background", "installed");
+  heartbeat();
   try {
     await chrome.action.setBadgeBackgroundColor({ color: "#7c3aed" });
   } catch {
     /* ignore badge errors */
   }
 });
+
+// Service worker startup / wake.
+dbg("background", "service worker started");
+heartbeat();

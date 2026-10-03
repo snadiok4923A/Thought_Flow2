@@ -17,12 +17,12 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["content/capture-core.js", "content/selectors-chatgpt.js", "content/chatgpt.js"],
+      "js": ["utils/debug.js", "content/capture-core.js", "content/selectors-chatgpt.js", "content/chatgpt.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["https://gemini.google.com/*"],
-      "js": ["content/capture-core.js", "content/selectors-gemini.js", "content/gemini.js"],
+      "js": ["utils/debug.js", "content/capture-core.js", "content/selectors-gemini.js", "content/gemini.js"],
       "run_at": "document_idle"
     }
   ],

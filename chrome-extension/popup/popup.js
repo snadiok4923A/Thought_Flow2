@@ -121,4 +121,49 @@ $("saveAdvanced").addEventListener("click", async () => {
   await Promise.all([refreshHealth(), refreshStats()]);
 });
 
+function renderEvents(events) {
+  const box = $("diagLog");
+  if (!events || !events.length) {
+    box.textContent = "No events yet. Interact with ChatGPT, then re-run.";
+    return;
+  }
+  box.innerHTML = events
+    .slice(0, 15)
+    .map((e) => {
+      const t = new Date(e.t).toLocaleTimeString();
+      const line = `${t}  ${e.e}${e.d ? " — " + e.d : ""}`;
+      return `<div>${line.replace(/</g, "&lt;")}</div>`;
+    })
+    .join("");
+}
+
+async function runDiagnostics() {
+  const pipe = $("diagPipeline");
+  pipe.textContent = "Testing pipeline…";
+  pipe.className = "diag-pipeline pending";
+  try {
+    const d = await chrome.runtime.sendMessage({ type: "TF_DIAGNOSE" });
+    if (!d) throw new Error("no response");
+    const parts = [];
+    parts.push(d.api.ok ? `API ✓ (${d.api.storage})` : `API ✗ (HTTP ${d.api.status ?? "unreachable"})`);
+    parts.push(d.settings.captureEnabled ? "Popup ✓" : "Popup OFF");
+    parts.push(d.session && d.session.enabled ? "Panel ✓" : "Panel OFF");
+    parts.push(
+      d.session && (d.session.rootNodeId || d.session.currentParentNodeId) ? "Start node ✓" : "Start node ✗"
+    );
+    if (d.queue > 0) parts.push(`queued: ${d.queue}`);
+    pipe.textContent = (d.gate === "OK" ? "PIPELINE OK — " : `BLOCKED: ${d.gate} — `) + parts.join(" · ");
+    pipe.className = "diag-pipeline " + (d.gate === "OK" ? "ok" : "bad");
+    renderEvents(d.events);
+  } catch (err) {
+    pipe.textContent = "Diagnostics failed: " + (err && err.message);
+    pipe.className = "diag-pipeline bad";
+  }
+}
+
+$("runDiag").addEventListener("click", runDiagnostics);
+
+// Show the latest persisted events as soon as the popup opens.
+chrome.storage.local.get({ tfDebugLog: [] }, (r) => renderEvents(r.tfDebugLog.slice(-15).reverse()));
+
 init();

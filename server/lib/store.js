@@ -22,6 +22,7 @@ const memSession = {
   direction: "right",
   rootNodeId: null,
   currentParentNodeId: null,
+  extensionHeartbeat: null,
   updatedAt: null,
 };
 let memSeq = 0;
@@ -113,6 +114,8 @@ function defineModels() {
       direction: { type: String, enum: ["right", "below"], default: "right" },
       rootNodeId: { type: String, default: null },
       currentParentNodeId: { type: String, default: null },
+      // Extension heartbeat (ms epoch) — powers the website's real "Connected" status.
+      extensionHeartbeat: { type: Number, default: null },
     },
     { timestamps: true }
   );
@@ -258,6 +261,7 @@ async function getSession() {
       direction: doc.direction === "below" ? "below" : "right",
       rootNodeId: doc.rootNodeId || null,
       currentParentNodeId: doc.currentParentNodeId || null,
+      extensionHeartbeat: doc.extensionHeartbeat || null,
       updatedAt: doc.updatedAt,
     };
   }
@@ -273,6 +277,10 @@ async function saveSession(patch = {}) {
     clean.currentParentNodeId = patch.currentParentNodeId
       ? String(patch.currentParentNodeId)
       : null;
+  if (patch.extensionHeartbeat !== undefined) {
+    const hb = Number(patch.extensionHeartbeat);
+    clean.extensionHeartbeat = Number.isFinite(hb) && hb > 0 ? hb : null;
+  }
 
   if (mode === "mongo") {
     const doc = await SessionModel.findOneAndUpdate(
@@ -285,6 +293,7 @@ async function saveSession(patch = {}) {
       direction: doc.direction === "below" ? "below" : "right",
       rootNodeId: doc.rootNodeId || null,
       currentParentNodeId: doc.currentParentNodeId || null,
+      extensionHeartbeat: doc.extensionHeartbeat || null,
       updatedAt: doc.updatedAt,
     };
   }
