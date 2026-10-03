@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ThoughtFlow AI Capture</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="logo">⬡</span>
+        <div>
+          <h1>ThoughtFlow AI Capture</h1>
+          <p class="sub">Exact Q+A → one mind-map node</p>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="row">
+        <span class="label">Capture</span>
+        <button id="captureToggle" class="switch" role="switch" aria-checked="false">
+          <span class="knob"></span>
+          <span class="state-text">OFF</span>
+        </button>
+      </section>
+
+      <section class="row">
+        <span class="label">Platform</span>
+        <span class="value"><span id="platformDot" class="dot off"></span><span id="platformName">—</span></span>
+      </section>
+
+      <section class="row">
+        <span class="label">Direction</span>
+        <select id="direction">
+          <option value="right">Right →</option>
+          <option value="below">Below ↓</option>
+        </select>
+      </section>
+
+      <section class="row">
+        <span class="label">Connection</span>
+        <span class="value"><span id="connDot" class="dot off"></span><span id="connText">Checking…</span></span>
+      </section>
+
+      <section class="row">
+        <span class="label">Captured</span>
+        <span class="value mono" id="capturedCount">–</span>
+      </section>
+
+      <details id="advanced">
+        <summary>Settings</summary>
+        <label for="apiBase">API base URL</label>
+        <input id="apiBase" type="text" spellcheck="false" placeholder="http://localhost:5001/api" />
+        <label for="token">Capture token</label>
+        <input id="token" type="password" spellcheck="false" placeholder="token" />
+        <label for="stabilityMs">Streaming stability (ms)</label>
+        <input id="stabilityMs" type="number" min="500" max="15000" step="250" />
+        <button id="saveAdvanced" class="secondary">Save</button>
+      </details>
+    </main>
+
+    <footer>
+      <span id="statusLine">Ready.</span>
+    </footer>
+
+    <script src="../utils/api.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

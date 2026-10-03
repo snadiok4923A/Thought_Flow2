@@ -26,4 +26,24 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  {
+    // Chrome extension (Manifest V3) — service worker, content scripts, popup
+    files: ['chrome-extension/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        ...globals.serviceworker,
+        chrome: 'readonly',
+        TFApi: 'readonly',
+      },
+    },
+  },
+  {
+    // Capture API server — Node.js CommonJS
+    files: ['server/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.node },
+      parserOptions: { ecmaVersion: 'latest', sourceType: 'script' },
+    },
+  },
 ])

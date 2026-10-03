@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "ThoughtFlow AI Capture",
+  "version": "1.0.0",
+  "description": "Captures complete ChatGPT / Gemini question+answer pairs exactly as visible and sends them to your ThoughtFlow backend to become mind-map nodes.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["content/capture-core.js", "content/selectors-chatgpt.js", "content/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content/capture-core.js", "content/selectors-gemini.js", "content/gemini.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "ThoughtFlow AI Capture"
+  }
+}

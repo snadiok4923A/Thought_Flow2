@@ -39,6 +39,16 @@ import PdfViewer from './components/PdfViewer';
 
 import FilePreviewModal from './components/FilePreviewModal';
 import MindMapNode from './components/MindMapNode';
+import AiCapturePanel from './components/AiCapturePanel';
+import {
+  fetchCaptureSync,
+  putCaptureSession,
+  ackCaptureItem,
+  buildCaptureNoteHtml,
+  shortenQuestionTitle,
+  normalizeCaptureDirection,
+  toTreeDirection
+} from './utils/aiCapture';
 
 // Configure PDF.js Worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -613,6 +623,27 @@ export default function ThoughtFlowApp() {
 
   // Active Node Creation Direction State: 'bottom' (vertical child) | 'right' (horizontal sibling)
   const [activeCreationDirection, setActiveCreationDirection] = useState('bottom');
+
+  // ---- AI Chat Auto Capture (Chrome extension → capture backend → this app) ----
+  // Session shape mirrors the backend: { enabled, direction, rootNodeId, currentParentNodeId }
+  const [aiCapture, setAiCapture] = useState({
+    enabled: false,
+    direction: 'right', // 'right' | 'below'
+    startNodeId: null,
+    startNodeText: '',
+    currentParentId: null,
+    connected: false,
+    captured: 0,
+    message: '',
+  });
+  // Live mirror so the poller never reads stale state
+  const aiCaptureStateRef = useRef(aiCapture);
+  const aiApplyingRef = useRef(false);
+
+  const updateAiCapture = useCallback((patch) => {
+    aiCaptureStateRef.current = { ...aiCaptureStateRef.current, ...patch };
+    setAiCapture((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   const treeContainerRef = useRef(null);
   const activeDragNodeRef = useRef(null);
@@ -1304,6 +1335,191 @@ export default function ThoughtFlowApp() {
     handleCreateNodeInDirection(activeNode, activeCreationDirection, newThoughtText.trim());
     setNewThoughtText('');
   };
+
+  // ---- AI Chat Capture: create ONE node per complete Question+Answer pair ----
+  // Reuses the existing addNodeInDirection tree logic (same positioning,
+  // connection and layout rules as the + buttons / branching box), then sets the
+  // exact conversation into the node's existing note (RichTextEditor content).
+  const applyAiCaptureItems = useCallback(async (items, session) => {
+    if (!items.length || aiApplyingRef.current) return;
+    const state = aiCaptureStateRef.current;
+    const direction = normalizeCaptureDirection(session.direction || state.direction);
+    let tree = treeDataRef.current;
+    if (!tree) return;
+
+    aiApplyingRef.current = true;
+    try {
+      // Parent resolution: continue from the LATEST AI-created node first,
+      // then the shared session chain, then the chosen start node.
+      // Never attach to an arbitrary node — if nothing resolves, keep items pending.
+      let parentId = state.currentParentId || session.currentParentNodeId || session.rootNodeId || state.startNodeId;
+      let parent = findNodeById(tree, parentId);
+      if (!parent && state.startNodeId) {
+        parentId = state.startNodeId;
+        parent = findNodeById(tree, parentId);
+      }
+      if (!parent) {
+        updateAiCapture({ message: 'Select a node to start AI Capture.' });
+        return;
+      }
+
+      flushPendingTextEditHistory();
+      pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
+
+      let lastNode = null;
+      const acks = [];
+      for (const item of items.slice(0, 5)) {
+        const { updatedTree, newNode } = addNodeInDirection(
+          tree,
+          parent.id,
+          toTreeDirection(direction),
+          shortenQuestionTitle(item.question)
+        );
+        if (!updatedTree || !newNode) break;
+        // Exact Q+A text into the node's existing note field (verbatim, HTML-escaped).
+        newNode.notes = buildCaptureNoteHtml({
+          source: item.source,
+          question: item.question,
+          answer: item.answer,
+        });
+        tree = updatedTree;
+        lastNode = newNode;
+        parent = newNode; // ← chaining: newest AI node becomes the next parent
+        acks.push({ id: item.id, nodeId: newNode.id });
+      }
+
+      if (!lastNode) return;
+
+      setTreeData(tree);
+      setActiveNode(lastNode); // note panel now shows this node's captured conversation
+      setHasUnsavedChanges(true);
+      updateAiCapture({ currentParentId: lastNode.id, message: '' });
+
+      // Confirm to the backend and keep the shared chain in sync.
+      acks.forEach((a) => ackCaptureItem(a.id, a.nodeId).catch(() => {}));
+      putCaptureSession({ currentParentNodeId: lastNode.id }).catch(() => {});
+    } finally {
+      aiApplyingRef.current = false;
+    }
+  }, [flushPendingTextEditHistory, pushSnapshotToUndo, collapsedNodeIds, updateAiCapture]);
+
+  // Poll the capture backend: adopt shared-session changes (popup direction,
+  // connection, counters) and create nodes for newly completed Q+A pairs.
+  useEffect(() => {
+    let cancelled = false;
+
+    const poll = async () => {
+      const state = aiCaptureStateRef.current;
+      let sync;
+      try {
+        sync = await fetchCaptureSync();
+      } catch {
+        if (!cancelled && state.connected) updateAiCapture({ connected: false });
+        return;
+      }
+      if (cancelled || !sync) return;
+
+      const { session, items, captured } = sync;
+      const patch = { connected: true };
+      if (typeof captured === 'number') patch.captured = captured;
+      if (session) {
+        const remoteDir = normalizeCaptureDirection(session.direction);
+        if (remoteDir !== state.direction) patch.direction = remoteDir;
+        if (session.enabled !== state.enabled) {
+          patch.enabled = session.enabled;
+          const rootNode = session.rootNodeId ? findNodeById(treeDataRef.current, session.rootNodeId) : null;
+          if (rootNode) {
+            patch.startNodeId = rootNode.id;
+            patch.startNodeText = rootNode.text || 'Untitled';
+            patch.currentParentId = session.currentParentNodeId || rootNode.id;
+            patch.message = '';
+          }
+        }
+        if (session.currentParentNodeId && session.currentParentNodeId !== state.currentParentId && state.enabled) {
+          patch.currentParentId = session.currentParentNodeId;
+        }
+      }
+      if (Object.keys(patch).some((k) => state[k] !== patch[k])) {
+        updateAiCapture(patch);
+      }
+
+      if (session && session.enabled && items && items.length) {
+        await applyAiCaptureItems(items, session);
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [applyAiCaptureItems, updateAiCapture]);
+
+  // Panel controls ----------------------------------------------------------------
+  const handleAiCaptureToggle = useCallback(async (nextEnabled) => {
+    if (nextEnabled) {
+      if (!treeData) {
+        updateAiCapture({ message: 'Open a mind map first.' });
+        return;
+      }
+      if (!activeNode) {
+        updateAiCapture({ message: 'Select a node to start AI Capture.' });
+        return;
+      }
+      updateAiCapture({
+        enabled: true,
+        startNodeId: activeNode.id,
+        startNodeText: activeNode.text || 'Untitled',
+        currentParentId: activeNode.id,
+        message: '',
+      });
+      try {
+        await putCaptureSession({
+          enabled: true,
+          direction: aiCaptureStateRef.current.direction,
+          rootNodeId: activeNode.id,
+          currentParentNodeId: activeNode.id,
+        });
+      } catch {
+        updateAiCapture({ connected: false });
+      }
+    } else {
+      // OFF: stop capturing immediately; created nodes remain untouched.
+      updateAiCapture({ enabled: false });
+      try {
+        await putCaptureSession({ enabled: false });
+      } catch {
+        updateAiCapture({ connected: false });
+      }
+    }
+  }, [activeNode, treeData, updateAiCapture]);
+
+  const handleAiCaptureDirection = useCallback(async (direction) => {
+    // Only FUTURE nodes use the new direction — nothing is rearranged.
+    updateAiCapture({ direction });
+    try {
+      await putCaptureSession({ direction });
+    } catch {
+      updateAiCapture({ connected: false });
+    }
+  }, [updateAiCapture]);
+
+  const handleAiCaptureUseSelected = useCallback(() => {
+    if (!activeNode) {
+      updateAiCapture({ message: 'Select a node to start AI Capture.' });
+      return;
+    }
+    updateAiCapture({
+      startNodeId: activeNode.id,
+      startNodeText: activeNode.text || 'Untitled',
+      currentParentId: activeNode.id,
+      message: '',
+    });
+    if (aiCaptureStateRef.current.enabled) {
+      putCaptureSession({ rootNodeId: activeNode.id, currentParentNodeId: activeNode.id }).catch(() => {});
+    }
+  }, [activeNode, updateAiCapture]);
 
   const handleUpdateNode = useCallback((updates) => {
     if (!activeNode || !treeData) return;
@@ -3685,6 +3901,21 @@ export default function ThoughtFlowApp() {
               </div>
           </div>
         </div>
+      )}
+
+      {/* AI CHAT CAPTURE PANEL (bottom-left, matches dark/purple design) */}
+      {!isReadMode && treeData && (
+        <AiCapturePanel
+          enabled={aiCapture.enabled}
+          connected={aiCapture.connected}
+          direction={aiCapture.direction}
+          startNodeText={aiCapture.startNodeText}
+          captured={aiCapture.captured}
+          message={aiCapture.message}
+          onToggle={handleAiCaptureToggle}
+          onDirection={handleAiCaptureDirection}
+          onUseSelected={handleAiCaptureUseSelected}
+        />
       )}
 
       {/* Delete Confirmation Warning Modal for Parent Nodes with Children */}
