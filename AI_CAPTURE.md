@@ -76,6 +76,15 @@ after the text is stable for `stabilityMs` (default 2000 ms).
    It streams a mock answer through the real content scripts, real API and
    real website poller, and shows a PASS/FAIL verdict (includes selector
    strategy switching: classic / testid / article).
+6. **Popup shows `Connection: Offline` and an API base like
+   `http://localhost:5174/api`** — that port belongs to the Vite dev frontend
+   (5173 is taken → Vite auto-increments), which answers `/api/health` with
+   404/HTML, never the capture API. The real backend is
+   `http://localhost:5001/api`. Known Vite ports (5173–5176, 4173–4174) are
+   auto-corrected when the popup opens; **reload the extension** in
+   `chrome://extensions` first so the background service worker uses the
+   corrected URL too. Offline is the honest status until health returns the
+   ThoughtFlow `status/ok` JSON from the real backend.
 
 ## Chrome extension popup
 

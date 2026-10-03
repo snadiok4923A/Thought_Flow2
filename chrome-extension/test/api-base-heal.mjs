@@ -9,7 +9,8 @@ import { fileURLToPath } from "url";
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const syncStore = {
-  apiBase: "http://localhost:5173/Thought_Flow2/", // exactly what the user had
+  apiBase: "http://localhost:5174/api", // the user's exact broken setting: Vite's
+  // second dev port (5173 was busy) with a plausible-looking /api path
   token: "tf-local-capture-token",
 };
 
@@ -71,11 +72,24 @@ const check = (name, cond, extra) => {
 
 const settings = await ctx.TFApi.getSettings();
 check(
-  "wrong 5173 URL normalized to backend",
+  "wrong 5174 URL (Vite dev port) normalized to backend",
   settings.apiBase === "http://localhost:5001/api",
   settings.apiBase
 );
 check("correction persisted to storage", syncStore.apiBase === "http://localhost:5001/api", syncStore.apiBase);
+
+// The original symptom too: the raw Vite frontend URL.
+check(
+  "5173 frontend URL normalized",
+  ctx.TFApi.normalizeApiBase("http://localhost:5173/Thought_Flow2/") === "http://localhost:5001/api",
+  ctx.TFApi.normalizeApiBase("http://localhost:5173/Thought_Flow2/")
+);
+// A genuinely custom backend port must survive untouched.
+check(
+  "custom backend port preserved",
+  ctx.TFApi.normalizeApiBase("http://localhost:6001/api") === "http://localhost:6001/api",
+  ctx.TFApi.normalizeApiBase("http://localhost:6001/api")
+);
 
 try {
   const h = await ctx.TFApi.health();

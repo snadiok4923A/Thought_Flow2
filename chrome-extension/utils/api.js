@@ -11,9 +11,9 @@
     stabilityMs: 2000, // answer must be unchanged for this long before capture
   };
 
-  // The server mounts every route under /api. A stored base that points at the
-  // Vite dev frontend (port 5173) or lacks the /api prefix can never work —
-  // repair it once and persist so the popup shows the real backend URL.
+  // The server mounts every route under /api. A stored base that points at
+  // the Vite dev frontend or lacks the /api prefix can never work — repair it
+  // once and persist so the popup shows the real backend URL.
   function normalizeApiBase(raw) {
     const cleaned = String(raw || "").trim().replace(/\/+$/, "");
     if (!/^https?:\/\//.test(cleaned)) return DEFAULTS.apiBase;
@@ -23,8 +23,11 @@
     } catch {
       return DEFAULTS.apiBase;
     }
-    // 5173 is the Vite dev server — the API lives elsewhere, use the default.
-    if (url.port === "5173") return DEFAULTS.apiBase;
+    // Vite dev servers start at 5173 and auto-increment (5174, 5175, …) when
+    // the port is busy; vite preview uses 4173+. Those ports host the FRONTEND
+    // — /api/health there answers 404/HTML, never the capture API. Use default.
+    const VITE_DEV_PORTS = new Set(["5173", "5174", "5175", "5176", "4173", "4174"]);
+    if (VITE_DEV_PORTS.has(url.port)) return DEFAULTS.apiBase;
     // Keep host:port (user may run the backend on another port), fix the path.
     if (!url.pathname.replace(/\/+$/, "").endsWith("/api")) {
       return `${url.origin}/api`;
