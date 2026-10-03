@@ -20,7 +20,12 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, service: "ThoughtFlow AI Capture", storage: store.storageMode() });
+  res.json({
+    status: "ok",
+    ok: true,
+    service: "ThoughtFlow AI Capture",
+    storage: store.storageMode(),
+  });
 });
 
 // Every capture route requires the shared capture token.

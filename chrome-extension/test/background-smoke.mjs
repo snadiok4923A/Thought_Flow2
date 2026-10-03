@@ -123,10 +123,12 @@ check("TF_DIAGNOSE gate OK", diag && diag.gate === "OK", diag && diag.gate);
 check("TF_DIAGNOSE api ok", diag && diag.api && diag.api.ok === true);
 
 // 1) Happy path: capture reaches the API with the website session open.
+// Unique per run so re-runs aren't blocked by the server's dedupe fingerprint.
+const runId = Date.now();
 const payload = {
   source: "chatgpt",
   conversationId: "smoke",
-  question: "Smoke test question?",
+  question: `Smoke test question? #${runId}`,
   answer: "Smoke test answer.",
 };
 const res1 = await send({ type: "TF_TRY_SEND", payload });
@@ -136,19 +138,19 @@ check("pair visible as pending", pending.items.some((i) => i.question === payloa
 
 // 2) Popup OFF → drop.
 syncStore.captureEnabled = false;
-const res2 = await send({ type: "TF_TRY_SEND", payload: { ...payload, question: "Q2?" } });
+const res2 = await send({ type: "TF_TRY_SEND", payload: { ...payload, question: `Q2? #${runId}` } });
 check("popup OFF drops", res2 && res2.drop === true && res2.reason === "extension-off", JSON.stringify(res2));
 syncStore.captureEnabled = true;
 
 // 3) Website panel OFF → drop.
 const savedSession = { ...session0 };
 await api("/ai-capture/session", "PUT", { enabled: false });
-const res3 = await send({ type: "TF_TRY_SEND", payload: { ...payload, question: "Q3?" } });
+const res3 = await send({ type: "TF_TRY_SEND", payload: { ...payload, question: `Q3? #${runId}` } });
 check("panel OFF drops", res3 && res3.drop === true && res3.reason === "website-off", JSON.stringify(res3));
 
 // 4) Panel ON but no start node → drop.
 await api("/ai-capture/session", "PUT", { enabled: true, rootNodeId: null, currentParentNodeId: null });
-const res4 = await send({ type: "TF_TRY_SEND", payload: { ...payload, question: "Q4?" } });
+const res4 = await send({ type: "TF_TRY_SEND", payload: { ...payload, question: `Q4? #${runId}` } });
 check("no start node drops", res4 && res4.drop === true && res4.reason === "website-off", JSON.stringify(res4));
 
 // Cleanup: remove smoke pair, restore session, clear simulated heartbeat.

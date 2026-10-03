@@ -145,7 +145,11 @@ async function runDiagnostics() {
     const d = await chrome.runtime.sendMessage({ type: "TF_DIAGNOSE" });
     if (!d) throw new Error("no response");
     const parts = [];
-    parts.push(d.api.ok ? `API ✓ (${d.api.storage})` : `API ✗ (HTTP ${d.api.status ?? "unreachable"})`);
+    parts.push(
+      d.api.ok
+        ? `API ✓ (${d.api.storage || "ok"})`
+        : `API ✗ (${d.api.url || "no URL"} → ${d.api.status ?? "unreachable"})`
+    );
     parts.push(d.settings.captureEnabled ? "Popup ✓" : "Popup OFF");
     parts.push(d.session && d.session.enabled ? "Panel ✓" : "Panel OFF");
     parts.push(

@@ -11,9 +11,41 @@
     stabilityMs: 2000, // answer must be unchanged for this long before capture
   };
 
+  // The server mounts every route under /api. A stored base that points at the
+  // Vite dev frontend (port 5173) or lacks the /api prefix can never work —
+  // repair it once and persist so the popup shows the real backend URL.
+  function normalizeApiBase(raw) {
+    const cleaned = String(raw || "").trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//.test(cleaned)) return DEFAULTS.apiBase;
+    let url;
+    try {
+      url = new URL(cleaned);
+    } catch {
+      return DEFAULTS.apiBase;
+    }
+    // 5173 is the Vite dev server — the API lives elsewhere, use the default.
+    if (url.port === "5173") return DEFAULTS.apiBase;
+    // Keep host:port (user may run the backend on another port), fix the path.
+    if (!url.pathname.replace(/\/+$/, "").endsWith("/api")) {
+      return `${url.origin}/api`;
+    }
+    return cleaned;
+  }
+
   function getSettings() {
     return new Promise((resolve) => {
-      chrome.storage.sync.get(DEFAULTS, (items) => resolve({ ...DEFAULTS, ...items }));
+      chrome.storage.sync.get(DEFAULTS, async (items) => {
+        const settings = { ...DEFAULTS, ...items };
+        const fixed = normalizeApiBase(settings.apiBase);
+        if (fixed !== settings.apiBase) {
+          settings.apiBase = fixed;
+          await setSettings({ apiBase: fixed });
+          if (globalThis.TFDebug && globalThis.TFDebug.log) {
+            globalThis.TFDebug.log("settings", "api base URL corrected to " + fixed);
+          }
+        }
+        resolve(settings);
+      });
     });
   }
 
@@ -24,17 +56,27 @@
   async function request(path, { method = "GET", body } = {}) {
     const settings = await getSettings();
     const url = settings.apiBase.replace(/\/$/, "") + path;
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Capture-Token": settings.token,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Capture-Token": settings.token,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      // Connection refused / DNS — attach the URL so diagnostics can show it.
+      const err = new Error(`unreachable ${url}`);
+      err.status = undefined;
+      err.url = url;
+      throw err;
+    }
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status}`);
       err.status = res.status;
+      err.url = url;
       throw err;
     }
     return res.json();

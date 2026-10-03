@@ -130,9 +130,9 @@ async function diagnose() {
   let api = null;
   try {
     const h = await TFApi.health();
-    api = { ok: true, storage: h.storage };
+    api = { ok: true, storage: h.storage, status: h.status };
   } catch (err) {
-    api = { ok: false, status: err && err.status };
+    api = { ok: false, status: err && err.status, url: err && err.url };
   }
   let session = null;
   let sessionErr = null;
