@@ -123,6 +123,8 @@ router.get("/stats", async (req, res) => {
 // GET /api/ai-capture/sync — one round-trip: session + pending + captured count.
 router.get("/sync", async (req, res) => {
   try {
+    // TEMP debug: which frontend origin is polling (referee for pending items).
+    console.log(`[sync] poll ${new Date().toISOString()} from ${req.get("referer") || req.get("origin") || "unknown-origin"}`);
     const [session, items, captured] = await Promise.all([
       store.getSession(),
       store.listPending(req.query.limit),

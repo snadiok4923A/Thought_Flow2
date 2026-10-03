@@ -1348,7 +1348,11 @@ export default function ThoughtFlowApp() {
     const state = aiCaptureStateRef.current;
     const direction = normalizeCaptureDirection(session.direction || state.direction);
     let tree = treeDataRef.current;
-    if (!tree) return;
+    console.log(`[AI Capture] Conversation received (${items.length} pending pair${items.length === 1 ? '' : 's'})`);
+    if (!tree) {
+      console.warn('[AI Capture] No board open — items stay pending until a mind map is loaded');
+      return;
+    }
 
     aiApplyingRef.current = true;
     try {
@@ -1363,9 +1367,11 @@ export default function ThoughtFlowApp() {
         parent = findNodeById(tree, parentId);
       }
       if (!parent) {
+        console.warn(`[AI Capture] Fixed parent not found in tree (tried ${parentId || 'none'}, startNodeId=${state.startNodeId || 'none'}) — keeping items pending`);
         updateAiCapture({ message: 'Select a node to start AI Capture.' });
         return;
       }
+      console.log(`[AI Capture] Parent node: ${parent.text || parent.id} (${parent.id})`);
 
       flushPendingTextEditHistory();
       pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
@@ -1380,6 +1386,8 @@ export default function ThoughtFlowApp() {
           shortenQuestionTitle(item.question)
         );
         if (!updatedTree || !newNode) break;
+        const title = shortenQuestionTitle(item.question);
+        console.log(`[AI Capture] Creating node: ${title} | direction: ${direction}`);
         // Exact Q+A text into the node's existing note field (verbatim, HTML-escaped).
         newNode.notes = buildCaptureNoteHtml({
           source: item.source,
@@ -1390,20 +1398,28 @@ export default function ThoughtFlowApp() {
         lastNode = newNode;
         // NOTE: `parent` stays FIXED on the manually selected node so every
         // captured node in this batch (and across batches) becomes its child.
+        console.log(`[AI Capture] Node created: ${newNode.id} (connected to ${parent.id} by existing branching logic)`);
         acks.push({ id: item.id, nodeId: newNode.id });
       }
 
-      if (!lastNode) return;
+      if (!lastNode) {
+        console.warn('[AI Capture] No node could be created from this batch');
+        return;
+      }
 
+      console.log('[AI Capture] Updating canvas state (setTreeData)');
       setTreeData(tree);
       // Do NOT auto-select the new AI node: the user's manually selected
       // node stays active and the fixed AI parent stays unchanged.
       setHasUnsavedChanges(true);
       updateAiCapture({ message: '' });
+      console.log(`[AI Capture] Node visible on canvas — fixed parent unchanged: ${parent.text || parent.id}`);
 
       // Confirm to the backend. The fixed parent is only written back to the
       // shared session on MANUAL selection — never when AI nodes are created.
       acks.forEach((a) => ackCaptureItem(a.id, a.nodeId).catch(() => {}));
+    } catch (err) {
+      console.error('[AI Capture] Node creation failed:', err && err.message, err);
     } finally {
       aiApplyingRef.current = false;
     }
@@ -1481,9 +1497,20 @@ export default function ThoughtFlowApp() {
 
     poll();
     const interval = setInterval(poll, 2500);
+    // Chrome throttles timers in HIDDEN tabs down to ~1/min, which delays
+    // node creation while the user is away in ChatGPT. Events are never
+    // throttled: sync instantly whenever the tab becomes visible/focused so
+    // captured nodes appear the moment the user looks at the canvas.
+    const onWake = () => {
+      if (!document.hidden) poll();
+    };
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('focus', onWake);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('focus', onWake);
     };
   }, [applyAiCaptureItems, updateAiCapture]);
 
