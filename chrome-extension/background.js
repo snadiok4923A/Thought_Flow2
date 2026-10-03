@@ -130,7 +130,12 @@ async function diagnose() {
   let api = null;
   try {
     const h = await TFApi.health();
-    api = { ok: true, storage: h.storage, status: h.status };
+    // Only the ThoughtFlow API answers with ok/status fields — JSON from any
+    // other server at that URL must not count as connected.
+    const real = !!h && (h.ok === true || h.status === "ok");
+    api = real
+      ? { ok: true, storage: h.storage, status: h.status || "ok" }
+      : { ok: false, status: "wrong service", url: settings.apiBase + "/health" };
   } catch (err) {
     api = { ok: false, status: err && err.status, url: err && err.url };
   }
@@ -175,7 +180,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "TF_HEALTH") {
     TFApi.health()
-      .then((h) => sendResponse({ connected: true, ...h }))
+      .then((h) => {
+        const real = !!h && (h.ok === true || h.status === "ok");
+        sendResponse(real ? { connected: true, ...h } : { connected: false });
+      })
       .catch(() => sendResponse({ connected: false }));
     return true;
   }

@@ -71,8 +71,14 @@ function renderToggle() {
 }
 
 async function init() {
-  settings = await chrome.runtime.sendMessage({ type: "TF_GET_SETTINGS" });
-  if (!settings) settings = { ...TFApi.DEFAULTS };
+  // Read settings through THIS popup's freshly loaded api.js (not the service
+  // worker) so a wrong stored API base is repaired to the real backend before
+  // the first health check runs — even if background.js is still stale.
+  try {
+    settings = await TFApi.getSettings();
+  } catch {
+    settings = { ...TFApi.DEFAULTS };
+  }
   renderToggle();
 
   $("apiBase").value = settings.apiBase || "";
@@ -111,13 +117,17 @@ $("direction").addEventListener("change", async (e) => {
 });
 
 $("saveAdvanced").addEventListener("click", async () => {
+  // Never persist a base that can't reach the API (e.g. the Vite frontend URL).
+  const rawBase = $("apiBase").value.trim() || TFApi.DEFAULTS.apiBase;
+  const apiBase = TFApi.normalizeApiBase(rawBase);
   const patch = {
-    apiBase: $("apiBase").value.trim() || TFApi.DEFAULTS.apiBase,
+    apiBase,
     token: $("token").value.trim(),
     stabilityMs: Math.max(500, Math.min(15000, parseInt($("stabilityMs").value, 10) || 2000)),
   };
   settings = await chrome.runtime.sendMessage({ type: "TF_SET_SETTINGS", patch });
-  setStatus("Settings saved.");
+  $("apiBase").value = apiBase;
+  setStatus(apiBase !== rawBase ? `API base corrected to ${apiBase}.` : "Settings saved.");
   await Promise.all([refreshHealth(), refreshStats()]);
 });
 

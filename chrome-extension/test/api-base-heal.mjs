@@ -93,6 +93,38 @@ check(
   s2.apiBase
 );
 
+// A 200 that is not JSON (e.g. Vite's HTML fallback) must throw WITH the URL —
+// this was the user's exact "no URL → unreachable" symptom.
+const realFetch = ctx.fetch;
+ctx.fetch = async (url) => ({
+  ok: true,
+  status: 200,
+  json: async () => {
+    throw new SyntaxError("Unexpected token < in JSON");
+  },
+});
+try {
+  await ctx.TFApi.health();
+  check("non-JSON 200 throws", false, "health resolved instead of throwing");
+} catch (e) {
+  check(
+    "non-JSON 200 throws with URL attached",
+    e.url === "http://localhost:5001/api/health",
+    `url=${e.url} msg=${e.message}`
+  );
+} finally {
+  ctx.fetch = realFetch;
+}
+
+// Health shape validation: JSON from the wrong service must not count as OK.
+syncStore.apiBase = "http://localhost:5001/api";
+try {
+  const h = await ctx.TFApi.health();
+  check("real health response accepted", h.ok === true || h.status === "ok", JSON.stringify(h));
+} catch (e) {
+  check("real health response accepted", false, e.message);
+}
+
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL")).length;
 console.log(failed === 0 ? "API-BASE HEAL: ALL PASS" : `API-BASE HEAL: ${failed} FAILED`);

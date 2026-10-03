@@ -79,13 +79,31 @@
       err.url = url;
       throw err;
     }
-    return res.json();
+    // A 200 from the wrong server (e.g. Vite's HTML fallback) must fail loudly
+    // with the URL attached, not as a bare SyntaxError with no context.
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      const err = new Error(`response from ${url} is not JSON`);
+      err.status = res.status;
+      err.url = url;
+      throw err;
+    }
+    if (!data || typeof data !== "object") {
+      const err = new Error(`unexpected response from ${url}`);
+      err.status = res.status;
+      err.url = url;
+      throw err;
+    }
+    return data;
   }
 
   globalThis.TFApi = {
     DEFAULTS,
     getSettings,
     setSettings,
+    normalizeApiBase,
     health: () => request("/health"),
     postCapture: (payload) => request("/ai-capture", { method: "POST", body: payload }),
     getSession: () => request("/ai-capture/session"),
