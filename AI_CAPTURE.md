@@ -16,7 +16,7 @@ ChatGPT / Gemini  →  Chrome extension  →  POST /api/ai-capture  →  Thought
 | Capture API | `server/` | Express + MongoDB (auto-fallback to in-memory) on port **5001** |
 | Chrome extension | `chrome-extension/` | MV3; content scripts for ChatGPT & Gemini, popup, retry queue |
 | Website panel | `src/components/AiCapturePanel.jsx` | Bottom-left ON/OFF, start node, direction, status |
-| App integration | `src/App.jsx` | Poller, parent chaining, node creation via existing tree logic |
+| App integration | `src/App.jsx` | Poller, fixed AI parent, node creation via existing tree logic |
 | Helpers | `src/utils/aiCapture.js` | API calls, note HTML, title shortening |
 
 ## Local testing (full walkthrough)
@@ -41,9 +41,13 @@ Then in ThoughtFlow:
 3. Ask ChatGPT "What is a PC?" and wait for the answer to finish.
 4. A node **"What is a PC?"** appears to the **right** of the start node; the note
    panel shows the exact `User: / ChatGPT:` conversation.
-5. Ask "What is software?" → chained to the right of node 1. Then "What is hardware?".
-6. Switch panel direction to **Below**, ask "What is RAM?" → node appears **below**
-   the latest node. Previous nodes are never rearranged.
+5. Ask "What is software?" → also a child of the **same start node** (siblings,
+   never chained). The start node stays selected. Then "What is hardware?".
+6. **Manually click another node** (e.g. "b"): from then on every captured node is
+   created under that node instead. AI-created nodes are never auto-selected and
+   never become the parent.
+7. Switch panel direction to **Below**, ask "What is RAM?" → node appears **below**
+   the fixed parent. Previous nodes are never rearranged.
 
 Duplicate Q+A pairs are rejected (SHA-256 content fingerprint in the API +
 client-side seen-list in the extension), streaming answers are captured only once

@@ -93,7 +93,8 @@ router.post("/:id/ack", async (req, res) => {
 });
 
 // GET/PUT /api/ai-capture/session — shared handshake: enabled, direction, start node,
-// current AI parent (chaining). Written by the website panel, read by the extension.
+// fixed AI parent (manual selection only; AI nodes never become the parent).
+// Written by the website panel, read by the extension.
 router.get("/session", async (req, res) => {
   try {
     res.json(await store.getSession());

@@ -639,6 +639,9 @@ export default function ThoughtFlowApp() {
   // Live mirror so the poller never reads stale state
   const aiCaptureStateRef = useRef(aiCapture);
   const aiApplyingRef = useRef(false);
+  // Timestamp of the last LOCALLY written fixed parent (manual selection) —
+  // used to ignore a stale shared-session value still in flight during polling.
+  const aiParentWriteTsRef = useRef(0);
 
   const updateAiCapture = useCallback((patch) => {
     aiCaptureStateRef.current = { ...aiCaptureStateRef.current, ...patch };
@@ -1349,8 +1352,9 @@ export default function ThoughtFlowApp() {
 
     aiApplyingRef.current = true;
     try {
-      // Parent resolution: continue from the LATEST AI-created node first,
-      // then the shared session chain, then the chosen start node.
+      // Parent resolution: the FIXED manually selected node (local state →
+      // shared session → chosen start node). AI-created nodes NEVER become
+      // the parent — only a manual node selection updates this value.
       // Never attach to an arbitrary node — if nothing resolves, keep items pending.
       let parentId = state.currentParentId || session.currentParentNodeId || session.rootNodeId || state.startNodeId;
       let parent = findNodeById(tree, parentId);
@@ -1384,20 +1388,22 @@ export default function ThoughtFlowApp() {
         });
         tree = updatedTree;
         lastNode = newNode;
-        parent = newNode; // ← chaining: newest AI node becomes the next parent
+        // NOTE: `parent` stays FIXED on the manually selected node so every
+        // captured node in this batch (and across batches) becomes its child.
         acks.push({ id: item.id, nodeId: newNode.id });
       }
 
       if (!lastNode) return;
 
       setTreeData(tree);
-      setActiveNode(lastNode); // note panel now shows this node's captured conversation
+      // Do NOT auto-select the new AI node: the user's manually selected
+      // node stays active and the fixed AI parent stays unchanged.
       setHasUnsavedChanges(true);
-      updateAiCapture({ currentParentId: lastNode.id, message: '' });
+      updateAiCapture({ message: '' });
 
-      // Confirm to the backend and keep the shared chain in sync.
+      // Confirm to the backend. The fixed parent is only written back to the
+      // shared session on MANUAL selection — never when AI nodes are created.
       acks.forEach((a) => ackCaptureItem(a.id, a.nodeId).catch(() => {}));
-      putCaptureSession({ currentParentNodeId: lastNode.id }).catch(() => {});
     } finally {
       aiApplyingRef.current = false;
     }
@@ -1439,7 +1445,14 @@ export default function ThoughtFlowApp() {
             patch.message = '';
           }
         }
-        if (session.currentParentNodeId && session.currentParentNodeId !== state.currentParentId && state.enabled) {
+        // Adopt the shared-session parent only if WE haven't just written a
+        // newer one locally (manual click racing a PUT) — and only while ON.
+        if (
+          session.currentParentNodeId &&
+          session.currentParentNodeId !== state.currentParentId &&
+          state.enabled &&
+          Date.now() - aiParentWriteTsRef.current > 4000
+        ) {
           patch.currentParentId = session.currentParentNodeId;
         }
         // Keep the Start Node label in sync even when the board loads after
@@ -1492,6 +1505,7 @@ export default function ThoughtFlowApp() {
         currentParentId: activeNode.id,
         message: '',
       });
+      aiParentWriteTsRef.current = Date.now();
       try {
         await putCaptureSession({
           enabled: true,
@@ -1534,6 +1548,7 @@ export default function ThoughtFlowApp() {
       currentParentId: activeNode.id,
       message: '',
     });
+    aiParentWriteTsRef.current = Date.now();
     if (aiCaptureStateRef.current.enabled) {
       putCaptureSession({ rootNodeId: activeNode.id, currentParentNodeId: activeNode.id }).catch(() => {});
     }
@@ -1694,6 +1709,15 @@ export default function ThoughtFlowApp() {
     selectedNodeIdsRef.current = emptySet;
     setSelectedNodeIds(emptySet);
     setActiveNode(node);
+
+    // Manual selection moves the FIXED AI capture parent (only while capture is ON).
+    const capState = aiCaptureStateRef.current;
+    if (capState.enabled && capState.currentParentId !== node.id) {
+      aiParentWriteTsRef.current = Date.now();
+      updateAiCapture({ currentParentId: node.id });
+      putCaptureSession({ currentParentNodeId: node.id }).catch(() => {});
+    }
+
     if (isSidebarOpen) {
       setActiveSection('inspector');
     }
