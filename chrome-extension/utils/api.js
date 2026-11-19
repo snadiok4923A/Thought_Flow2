@@ -3,11 +3,15 @@
 // Classic script — exposes globalThis.TFApi.
 
 (function () {
+  // Hosted builds bake apiBase/token into hosted-config.js (see
+  // scripts/pack-extension.mjs). Empty = local development defaults.
+  const hosted =
+    (typeof globalThis !== "undefined" && globalThis.TF_HOSTED_CONFIG) || {};
   const DEFAULTS = {
     captureEnabled: true, // extension-level switch (website panel is the second switch)
     direction: "right", // 'right' | 'below' — synced with the website session
-    apiBase: "http://localhost:5001/api",
-    token: "tf-local-capture-token",
+    apiBase: hosted.apiBase || "http://localhost:5001/api",
+    token: hosted.token || "tf-local-capture-token",
     stabilityMs: 2000, // answer must be unchanged for this long before capture
   };
 

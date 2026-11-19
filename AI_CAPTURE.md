@@ -168,6 +168,38 @@ GitHub Pages **can point at any hosted instance** — no rebuild needed:
    subject to page CORS — the API just must answer with CORS headers, which
    it always does).
 
+## Zero-config for end users (one-time host setup, then just works)
+
+`localhost:5001` only ever works on the PC running the server — any other
+user opening the GitHub Pages site gets Offline, because their `localhost`
+has no server. To make it "open website + install extension → done" for
+everyone, do the hosting **once** (steps 1–2 above), then bake the hosted
+URL + token into both clients:
+
+```bash
+# 1) Website: build with the hosted API baked in, deploy to GitHub Pages
+node scripts/deploy-hosted.mjs --api https://<your-app>.onrender.com/api --token <CAPTURE_TOKEN>
+
+# 2) Extension: pack a distributable zip with the same API baked in
+node scripts/pack-extension.mjs --api https://<your-app>.onrender.com/api --token <CAPTURE_TOKEN>
+# → dist-extension/thoughtflow-capture.zip  (share via Drive / GitHub Release / Web Store)
+```
+
+End users then do only:
+1. Open the website → panel ON → select a start node.
+2. Unzip the extension → `chrome://extensions` → Developer mode → Load unpacked → select the folder.
+3. Chat on Arena / ChatGPT / Gemini → node appears. No terminal, no Settings.
+
+Users can still override API/token in panel ⚙ Settings / popup Settings
+(`chrome.storage` wins over the baked defaults). Users who previously set
+`localhost` in Settings must update it once to the hosted URL.
+
+> **Security note:** the token is embedded in the website JS and the
+> extension zip — anyone who extracts them can see it. Use a strong random
+> token, keep the server rate limit on (default 30/min/IP), lock CORS with
+> `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
+> for personal / small-team use.
+
 ## Chrome extension popup
 
 - **Capture** — extension-level switch (website panel is the second switch; both must be ON)

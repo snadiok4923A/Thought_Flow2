@@ -4,7 +4,7 @@
 // and heartbeats the API so the website can show real extension connectivity.
 // Conversation text is never written to console logs.
 
-importScripts("utils/debug.js", "utils/api.js");
+importScripts("hosted-config.js", "utils/debug.js", "utils/api.js");
 
 const MAX_QUEUE = 50;
 const MAX_TRIES = 40; // ~20 min of retries at 30 s per flush — bridges most server restarts
