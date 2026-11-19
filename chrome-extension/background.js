@@ -7,7 +7,7 @@
 importScripts("utils/debug.js", "utils/api.js");
 
 const MAX_QUEUE = 50;
-const MAX_TRIES = 20;
+const MAX_TRIES = 40; // ~20 min of retries at 30 s per flush — bridges most server restarts
 
 function dbg(event, detail) {
   globalThis.TFDebug.log(event, detail);

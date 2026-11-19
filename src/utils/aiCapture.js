@@ -1,9 +1,18 @@
 // AI Chat Capture — helpers for talking to the capture backend and for
 // formatting captured conversations into the existing note (HTML) format.
 
-const DEFAULT_API_BASE = "http://localhost:5001/api";
-const DEFAULT_TOKEN = "tf-local-capture-token";
+// Hosted deployments can bake the API location in at build time (Vite exposes
+// only VITE_* vars), or change it at runtime via the panel's ⚙ Settings —
+// whichever is convenient, no code edit required.
+const ENV_API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_CAPTURE_API_BASE) || "";
+const ENV_TOKEN =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_CAPTURE_TOKEN) || "";
+const DEFAULT_API_BASE = ENV_API_BASE || "http://localhost:5001/api";
+const DEFAULT_TOKEN = ENV_TOKEN || "tf-local-capture-token";
 const CFG_KEY = "thoughtflow-ai-capture-cfg";
+const APPLIED_KEY = "thoughtflow-ai-applied";
+const APPLIED_CAP = 400;
 
 export function getCaptureConfig() {
   try {
@@ -59,8 +68,37 @@ function textToHtml(s) {
   return escapeHtml(s).replace(/\r\n?|\n/g, "<br>");
 }
 
+const SOURCE_LABELS = {
+  chatgpt: "ChatGPT",
+  gemini: "Gemini",
+  arena: "Arena",
+  lmsys: "Arena",
+  grok: "Grok",
+  claude: "Claude",
+  deepseek: "DeepSeek",
+  perplexity: "Perplexity",
+  copilot: "Copilot",
+  qwen: "Qwen",
+  kimi: "Kimi",
+  poe: "Poe",
+  you: "You.com",
+  duckduckgo: "DuckDuckGo",
+  meta: "Meta AI",
+  mistral: "Mistral",
+  felo: "Felo",
+  z: "GLM (Z.ai)",
+  minimax: "MiniMax",
+  manual: "Manual",
+  generic: "AI Chat",
+};
+
+// Human label for any backend source tag — known sites get their brand name,
+// unknown future sites get a prettified fallback (no frontend release needed).
 export function sourceLabel(source) {
-  return source === "gemini" ? "Gemini" : "ChatGPT";
+  const s = String(source || "").toLowerCase().trim();
+  if (SOURCE_LABELS[s]) return SOURCE_LABELS[s];
+  if (!s) return "AI Chat";
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // Exact conversation text, preserved verbatim (no summarizing/rewriting):
@@ -96,4 +134,28 @@ export function normalizeCaptureDirection(dir) {
 
 export function toTreeDirection(dir) {
   return normalizeCaptureDirection(dir) === "right" ? "right" : "down";
+}
+
+// ---- Applied-item ledger ---------------------------------------------------
+// Maps server capture id → created node id, persisted in localStorage so a
+// lost ack (or a page reload before the ack landed) can never duplicate a node.
+export function loadAppliedCaptureMap() {
+  try {
+    const raw = localStorage.getItem(APPLIED_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveAppliedCaptureMap(map) {
+  try {
+    const entries = Object.entries(map);
+    const trimmed =
+      entries.length > APPLIED_CAP ? Object.fromEntries(entries.slice(-APPLIED_CAP)) : map;
+    localStorage.setItem(APPLIED_KEY, JSON.stringify(trimmed));
+  } catch {
+    /* private mode / quota — in-memory map still guards this session */
+  }
 }

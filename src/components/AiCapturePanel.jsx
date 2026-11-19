@@ -141,13 +141,12 @@ export default function AiCapturePanel({
         {/* Supported */}
         <div className={row}>
           <span className="text-xs text-zinc-400 font-medium">Supported</span>
-          <span className="flex items-center gap-2 text-xs text-zinc-300">
-            <span className="flex items-center gap-1">
-              <Check className="w-3 h-3 text-green-400" /> ChatGPT
-            </span>
-            <span className="flex items-center gap-1">
-              <Check className="w-3 h-3 text-green-400" /> Gemini
-            </span>
+          <span
+            className="flex items-center gap-1.5 text-[11px] text-zinc-300"
+            title="Auto-capture: ChatGPT, Gemini, Arena, Grok, Claude, DeepSeek, Perplexity, Copilot, Poe, You.com, DuckDuckGo, Meta AI, Mistral, Qwen, Kimi, Felo, Z.ai, MiniMax. Anything else: extension popup → Quick add."
+          >
+            <Check className="w-3 h-3 text-green-400" />
+            <span>ChatGPT · Gemini · Arena +18 more</span>
           </span>
         </div>
 

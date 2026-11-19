@@ -50,6 +50,12 @@
     if (!selectors || typeof selectors.collectMessages !== "function") return;
     if (!selectors.isSupportedPage()) return;
 
+    // Cooldown before a *transiently dropped* send (e.g. website panel OFF)
+    // may be retried. Tunable for tests / picky users via chrome.storage.sync.
+    const SEND_RETRY_COOLDOWN_MS = 30000;
+    const retryCooldown = () =>
+      Math.max(1000, Number(state.settings.retryCooldownMs) || SEND_RETRY_COOLDOWN_MS);
+
     const state = {
       settings: { captureEnabled: true, stabilityMs: DEFAULT_STABILITY_MS },
       seen: new Set(),
@@ -59,6 +65,9 @@
       scanTimer: null,
       lastScanSig: "",
       waitingLogged: new Set(),
+      inflight: new Set(), // sends awaiting a server response
+      retryAfter: new Map(), // fp -> epoch ms before a dropped send may be retried
+      wakeTimer: null, // precise wake-up when the next settle/retry deadline is known
     };
 
     dbg("content-loaded", selectors.label + " @ " + location.host);
@@ -75,17 +84,22 @@
     }
 
     // ---- settings ----
-    chrome.storage.sync.get({ captureEnabled: true, stabilityMs: DEFAULT_STABILITY_MS }, (items) => {
-      const wasEnabled = state.settings.captureEnabled;
-      state.settings = items;
-      dbg("settings", `enabled=${items.captureEnabled} stabilityMs=${items.stabilityMs}`);
-      if (!wasEnabled && items.captureEnabled) state.baselineDone = false; // re-baseline on enable
-    });
+    chrome.storage.sync.get(
+      { captureEnabled: true, stabilityMs: DEFAULT_STABILITY_MS, retryCooldownMs: SEND_RETRY_COOLDOWN_MS },
+      (items) => {
+        const wasEnabled = state.settings.captureEnabled;
+        state.settings = items;
+        dbg("settings", `enabled=${items.captureEnabled} stabilityMs=${items.stabilityMs}`);
+        if (!wasEnabled && items.captureEnabled) state.baselineDone = false; // re-baseline on enable
+      }
+    );
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "sync") return;
       const before = state.settings.captureEnabled;
       if (changes.captureEnabled) state.settings.captureEnabled = changes.captureEnabled.newValue;
       if (changes.stabilityMs) state.settings.stabilityMs = changes.stabilityMs.newValue || DEFAULT_STABILITY_MS;
+      if (changes.retryCooldownMs)
+        state.settings.retryCooldownMs = changes.retryCooldownMs.newValue || SEND_RETRY_COOLDOWN_MS;
       if (before === false && state.settings.captureEnabled) {
         state.baselineDone = false;
         dbg("settings", "capture re-enabled → baseline");
@@ -111,7 +125,40 @@
     }
 
     function send(pair, fp, convId) {
-      remember(fp);
+      // Never mark a pair as "seen" before the server durably accepts (or
+      // queues, or definitively rejects) it — otherwise a transient drop
+      // (website panel OFF, network blip) would lose the answer forever.
+      state.inflight.add(fp);
+      const settle = (resp) => {
+        state.inflight.delete(fp);
+        const err = chrome.runtime.lastError;
+        if (err) {
+          state.retryAfter.set(fp, Date.now() + retryCooldown());
+          dbg("send-error", err.message || "runtime error");
+          return;
+        }
+        if (!resp) {
+          state.retryAfter.set(fp, Date.now() + retryCooldown());
+          dbg("send-error", "no response from background");
+          return;
+        }
+        if (resp.drop) {
+          if (resp.reason === "auth" || resp.reason === "invalid") {
+            // Permanent (bad token / bad payload) — never retry, but don't loop either.
+            remember(fp);
+            dbg("send-dropped", `${resp.reason} (permanent — not retrying)`);
+          } else {
+            // Transient (e.g. website panel OFF) — do NOT remember; retry after cooldown.
+            state.retryAfter.set(fp, Date.now() + retryCooldown());
+            dbg("send-dropped", resp.reason || "unknown");
+          }
+          return;
+        }
+        remember(fp);
+        if (resp.queued) dbg("send-ok", "queued (API offline)");
+        else if (resp.duplicate) dbg("send-ok", "duplicate");
+        else dbg("send-ok", "accepted");
+      };
       const payload = {
         source: selectors.platform,
         conversationId: convId || "",
@@ -124,21 +171,10 @@
       };
       dbg("send", `q=${pair.question.length}c a=${pair.answer.length}c fp=${fp}`);
       try {
-        chrome.runtime.sendMessage({ type: "TF_TRY_SEND", payload }, (resp) => {
-          const err = chrome.runtime.lastError;
-          if (err) {
-            dbg("send-error", err.message || "runtime error");
-            return;
-          }
-          if (!resp) {
-            dbg("send-error", "no response from background");
-          } else if (resp.drop) {
-            dbg("send-dropped", resp.reason || "unknown");
-          } else {
-            dbg("send-ok", resp.queued ? "queued (API offline)" : resp.duplicate ? "duplicate" : "accepted");
-          }
-        });
+        chrome.runtime.sendMessage({ type: "TF_TRY_SEND", payload }, settle);
       } catch {
+        state.inflight.delete(fp);
+        state.retryAfter.set(fp, Date.now() + retryCooldown());
         dbg("send-error", "extension reloading (context invalidated)");
       }
     }
@@ -184,6 +220,12 @@
             state.stats.delete(fp);
             return;
           }
+          // A send is already in flight for this pair — wait for its response.
+          if (state.inflight.has(fp)) return;
+          // Last attempt dropped (transient) — wait for the cooldown to expire.
+          const retryAt = state.retryAfter.get(fp);
+          if (retryAt && now < retryAt) return;
+          if (retryAt && now >= retryAt) state.retryAfter.delete(fp);
 
           // Capture OFF → remember so nothing retro-captures after re-enable.
           if (!enabled) {
@@ -234,6 +276,27 @@
         });
 
         state.baselineDone = true;
+
+        // Wake the scanner exactly when the least-settled pair (or the next
+        // cooldown-retry) could be due — instead of waiting for the next
+        // random DOM mutation or the 3 s safety interval on a quiet page.
+        let wakeIn = Infinity;
+        for (const st of state.stats.values()) {
+          const remaining = st.stableSince + stabilityMs - now;
+          if (remaining < wakeIn) wakeIn = remaining;
+        }
+        for (const t of state.retryAfter.values()) {
+          const remaining = t - now;
+          if (remaining >= 0 && remaining < wakeIn) wakeIn = remaining;
+        }
+        if (Number.isFinite(wakeIn)) {
+          const delay = Math.max(60, Math.min(wakeIn + 40, 4000));
+          if (state.wakeTimer) clearTimeout(state.wakeTimer);
+          state.wakeTimer = setTimeout(() => {
+            state.wakeTimer = null;
+            tick();
+          }, delay);
+        }
       } catch (e) {
         dbg("scan-error", (e && e.message) || "DOM error");
       }

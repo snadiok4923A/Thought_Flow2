@@ -47,7 +47,9 @@ import {
   buildCaptureNoteHtml,
   shortenQuestionTitle,
   normalizeCaptureDirection,
-  toTreeDirection
+  toTreeDirection,
+  loadAppliedCaptureMap,
+  saveAppliedCaptureMap
 } from './utils/aiCapture';
 
 // Configure PDF.js Worker
@@ -639,6 +641,15 @@ export default function ThoughtFlowApp() {
   // Live mirror so the poller never reads stale state
   const aiCaptureStateRef = useRef(aiCapture);
   const aiApplyingRef = useRef(false);
+  // captureId → nodeId for pairs already turned into nodes this browser
+  // (persisted in localStorage). A lost/slow ack must never duplicate a node.
+  const appliedCaptureMapRef = useRef(null);
+  if (appliedCaptureMapRef.current === null) {
+    appliedCaptureMapRef.current = loadAppliedCaptureMap();
+  }
+  // Acks that failed (network blip) — retried every poll; items are NEVER
+  // re-applied while their node already exists.
+  const pendingAcksRef = useRef([]);
   // Timestamp of the last LOCALLY written fixed parent (manual selection) —
   // used to ignore a stale shared-session value still in flight during polling.
   const aiParentWriteTsRef = useRef(0);
@@ -1339,6 +1350,26 @@ export default function ThoughtFlowApp() {
     setNewThoughtText('');
   };
 
+  // Shared: best-effort ack of a batch; failures are queued for the next poll.
+  const finishCaptureAcks = useCallback(async (acks) => {
+    if (!acks.length) return;
+    const settled = await Promise.allSettled(acks.map((a) => ackCaptureItem(a.id, a.nodeId)));
+    settled.forEach((r, i) => {
+      if (r.status === 'rejected' && pendingAcksRef.current.length < 100) {
+        pendingAcksRef.current.push(acks[i]);
+      }
+    });
+  }, []);
+
+  // Retried on every poll until a lost ack lands — the node is never
+  // re-created for items that are already in the applied-ledger.
+  const flushPendingAcks = useCallback(async () => {
+    const queue = pendingAcksRef.current;
+    if (!queue.length) return;
+    pendingAcksRef.current = [];
+    await finishCaptureAcks(queue);
+  }, [finishCaptureAcks]);
+
   // ---- AI Chat Capture: create ONE node per complete Question+Answer pair ----
   // Reuses the existing addNodeInDirection tree logic (same positioning,
   // connection and layout rules as the + buttons / branching box), then sets the
@@ -1347,83 +1378,102 @@ export default function ThoughtFlowApp() {
     if (!items.length || aiApplyingRef.current) return;
     const state = aiCaptureStateRef.current;
     const direction = normalizeCaptureDirection(session.direction || state.direction);
-    let tree = treeDataRef.current;
     console.log(`[AI Capture] Conversation received (${items.length} pending pair${items.length === 1 ? '' : 's'})`);
-    if (!tree) {
+
+    // Split into pairs we already turned into nodes (ack lost in flight or the
+    // page reloaded before it landed) and genuinely new ones. Known-applied
+    // items are simply re-acked — never re-created, so no duplicate nodes.
+    const appliedMap = appliedCaptureMapRef.current;
+    const acks = [];
+    const freshItems = [];
+    for (const it of items) {
+      if (!it || !it.id) continue;
+      if (appliedMap[it.id]) acks.push({ id: it.id, nodeId: appliedMap[it.id] });
+      else freshItems.push(it);
+    }
+
+    let tree = treeDataRef.current;
+    if (freshItems.length && !tree) {
       console.warn('[AI Capture] No board open — items stay pending until a mind map is loaded');
+      await finishCaptureAcks(acks);
       return;
     }
 
     aiApplyingRef.current = true;
     try {
-      // Parent resolution: the FIXED manually selected node (local state →
-      // shared session → chosen start node). AI-created nodes NEVER become
-      // the parent — only a manual node selection updates this value.
-      // Never attach to an arbitrary node — if nothing resolves, keep items pending.
-      let parentId = state.currentParentId || session.currentParentNodeId || session.rootNodeId || state.startNodeId;
-      let parent = findNodeById(tree, parentId);
-      if (!parent && state.startNodeId) {
-        parentId = state.startNodeId;
-        parent = findNodeById(tree, parentId);
+      if (freshItems.length) {
+        // Parent resolution: the FIXED manually selected node (local state →
+        // shared session → chosen start node). AI-created nodes NEVER become
+        // the parent — only a manual node selection updates this value.
+        // Never attach to an arbitrary node — if nothing resolves, keep items pending.
+        let parentId = state.currentParentId || session.currentParentNodeId || session.rootNodeId || state.startNodeId;
+        let parent = findNodeById(tree, parentId);
+        if (!parent && state.startNodeId) {
+          parentId = state.startNodeId;
+          parent = findNodeById(tree, parentId);
+        }
+        if (!parent) {
+          console.warn(`[AI Capture] Fixed parent not found in tree (tried ${parentId || 'none'}, startNodeId=${state.startNodeId || 'none'}) — keeping items pending`);
+          updateAiCapture({ message: 'Select a node to start AI Capture.' });
+          await finishCaptureAcks(acks);
+          return;
+        }
+        console.log(`[AI Capture] Parent node: ${parent.text || parent.id} (${parent.id})`);
+
+        flushPendingTextEditHistory();
+        pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
+
+        let lastNode = null;
+        for (const item of freshItems.slice(0, 5)) {
+          const { updatedTree, newNode } = addNodeInDirection(
+            tree,
+            parent.id,
+            toTreeDirection(direction),
+            shortenQuestionTitle(item.question)
+          );
+          if (!updatedTree || !newNode) break;
+          const title = shortenQuestionTitle(item.question);
+          console.log(`[AI Capture] Creating node: ${title} | direction: ${direction}`);
+          // Exact Q+A text into the node's existing note field (verbatim, HTML-escaped).
+          newNode.notes = buildCaptureNoteHtml({
+            source: item.source,
+            question: item.question,
+            answer: item.answer,
+          });
+          tree = updatedTree;
+          lastNode = newNode;
+          // NOTE: `parent` stays FIXED on the manually selected node so every
+          // captured node in this batch (and across batches) becomes its child.
+          // Record BEFORE the ack so a crash/reload mid-flight still can't duplicate.
+          appliedMap[item.id] = newNode.id;
+          console.log(`[AI Capture] Node created: ${newNode.id} (connected to ${parent.id} by existing branching logic)`);
+          acks.push({ id: item.id, nodeId: newNode.id });
+        }
+        saveAppliedCaptureMap(appliedMap);
+
+        if (lastNode) {
+          console.log('[AI Capture] Updating canvas state (setTreeData)');
+          setTreeData(tree);
+          // Do NOT auto-select the new AI node: the user's manually selected
+          // node stays active and the fixed AI parent stays unchanged.
+          setHasUnsavedChanges(true);
+          updateAiCapture({ message: '' });
+          console.log(`[AI Capture] Node visible on canvas — fixed parent unchanged: ${parent.text || parent.id}`);
+        } else {
+          console.warn('[AI Capture] No node could be created from this batch');
+        }
       }
-      if (!parent) {
-        console.warn(`[AI Capture] Fixed parent not found in tree (tried ${parentId || 'none'}, startNodeId=${state.startNodeId || 'none'}) — keeping items pending`);
-        updateAiCapture({ message: 'Select a node to start AI Capture.' });
-        return;
-      }
-      console.log(`[AI Capture] Parent node: ${parent.text || parent.id} (${parent.id})`);
 
-      flushPendingTextEditHistory();
-      pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
-
-      let lastNode = null;
-      const acks = [];
-      for (const item of items.slice(0, 5)) {
-        const { updatedTree, newNode } = addNodeInDirection(
-          tree,
-          parent.id,
-          toTreeDirection(direction),
-          shortenQuestionTitle(item.question)
-        );
-        if (!updatedTree || !newNode) break;
-        const title = shortenQuestionTitle(item.question);
-        console.log(`[AI Capture] Creating node: ${title} | direction: ${direction}`);
-        // Exact Q+A text into the node's existing note field (verbatim, HTML-escaped).
-        newNode.notes = buildCaptureNoteHtml({
-          source: item.source,
-          question: item.question,
-          answer: item.answer,
-        });
-        tree = updatedTree;
-        lastNode = newNode;
-        // NOTE: `parent` stays FIXED on the manually selected node so every
-        // captured node in this batch (and across batches) becomes its child.
-        console.log(`[AI Capture] Node created: ${newNode.id} (connected to ${parent.id} by existing branching logic)`);
-        acks.push({ id: item.id, nodeId: newNode.id });
-      }
-
-      if (!lastNode) {
-        console.warn('[AI Capture] No node could be created from this batch');
-        return;
-      }
-
-      console.log('[AI Capture] Updating canvas state (setTreeData)');
-      setTreeData(tree);
-      // Do NOT auto-select the new AI node: the user's manually selected
-      // node stays active and the fixed AI parent stays unchanged.
-      setHasUnsavedChanges(true);
-      updateAiCapture({ message: '' });
-      console.log(`[AI Capture] Node visible on canvas — fixed parent unchanged: ${parent.text || parent.id}`);
-
-      // Confirm to the backend. The fixed parent is only written back to the
-      // shared session on MANUAL selection — never when AI nodes are created.
-      acks.forEach((a) => ackCaptureItem(a.id, a.nodeId).catch(() => {}));
+      // Confirm to the backend — failures are queued and retried on the next
+      // poll; the fixed parent is only written back to the shared session on
+      // MANUAL selection, never when AI nodes are created.
+      await finishCaptureAcks(acks);
     } catch (err) {
       console.error('[AI Capture] Node creation failed:', err && err.message, err);
     } finally {
       aiApplyingRef.current = false;
     }
-  }, [flushPendingTextEditHistory, pushSnapshotToUndo, collapsedNodeIds, updateAiCapture]);
+  }, [flushPendingTextEditHistory, pushSnapshotToUndo, collapsedNodeIds, updateAiCapture, finishCaptureAcks]);
 
   // Poll the capture backend: adopt shared-session changes (popup direction,
   // connection, counters) and create nodes for newly completed Q+A pairs.
@@ -1490,6 +1540,8 @@ export default function ThoughtFlowApp() {
         updateAiCapture(patch);
       }
 
+      // Re-ack anything that failed before (node already exists — no re-creation).
+      await flushPendingAcks();
       if (session && session.enabled && items && items.length) {
         await applyAiCaptureItems(items, session);
       }
@@ -1512,7 +1564,7 @@ export default function ThoughtFlowApp() {
       document.removeEventListener('visibilitychange', onWake);
       window.removeEventListener('focus', onWake);
     };
-  }, [applyAiCaptureItems, updateAiCapture]);
+  }, [applyAiCaptureItems, flushPendingAcks, updateAiCapture]);
 
   // Panel controls ----------------------------------------------------------------
   const handleAiCaptureToggle = useCallback(async (nextEnabled) => {
