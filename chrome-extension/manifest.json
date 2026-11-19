@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
   "version": "1.1.0",
-  "description": "Captures complete Q+A pairs from ChatGPT, Gemini, Arena and other AI chat sites exactly as visible and sends them to your ThoughtFlow backend to become mind-map nodes.",
-  "permissions": ["storage", "alarms"],
+  "description": "Captures complete Q+A pairs from ChatGPT, Gemini, Arena and other AI chat sites exactly as visible and sends them directly to your open ThoughtFlow tab to become mind-map nodes (no server needed).",
+  "permissions": ["storage", "alarms", "tabs"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -35,6 +35,9 @@
     "https://felo.ai/*",
     "https://chat.z.ai/*",
     "https://chat.minimax.io/*",
+    "https://snadiok4923a.github.io/Thought_Flow2/*",
+    "http://localhost:5173/*",
+    "http://localhost:5174/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -84,6 +87,15 @@
         "https://chat.minimax.io/*"
       ],
       "js": ["utils/debug.js", "content/capture-core.js", "content/selectors-generic.js", "content/generic.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://snadiok4923a.github.io/Thought_Flow2/*",
+        "http://localhost:5173/*",
+        "http://localhost:5174/*"
+      ],
+      "js": ["content/thoughtflow-bridge.js"],
       "run_at": "document_idle"
     }
   ],

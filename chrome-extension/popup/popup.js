@@ -130,6 +130,19 @@ $("captureToggle").addEventListener("click", async () => {
 
 $("direction").addEventListener("change", async (e) => {
   const direction = e.target.value;
+  // Direct mode first: set it on the open ThoughtFlow tab.
+  try {
+    const r = await chrome.runtime.sendMessage({
+      type: "TF_SET_DIRECTION_DIRECT",
+      direction,
+    });
+    if (r && r.ok) {
+      setStatus(`Direction set to ${direction}. Future nodes only.`);
+      return;
+    }
+  } catch {
+    /* fall through to legacy server session */
+  }
   try {
     session = await chrome.runtime.sendMessage({
       type: "TF_PUT_SESSION",
@@ -137,7 +150,7 @@ $("direction").addEventListener("change", async (e) => {
     });
     setStatus(`Direction set to ${direction}. Future nodes only.`);
   } catch {
-    setStatus("Could not save direction (server offline).");
+    setStatus("Could not save direction (open ThoughtFlow or start the server).");
   }
 });
 
@@ -180,16 +193,21 @@ async function runDiagnostics() {
     const d = await chrome.runtime.sendMessage({ type: "TF_DIAGNOSE" });
     if (!d) throw new Error("no response");
     const parts = [];
-    parts.push(
-      d.api.ok
-        ? `API ✓ (${d.api.storage || "ok"})`
-        : `API ✗ (${d.api.url || "no URL"} → ${d.api.status ?? "unreachable"})`
-    );
+    // Direct mode: ThoughtFlow tab open? (server API is legacy fallback)
+    if (d.panel) {
+      parts.push("Tab ✓ (direct)");
+    } else if (d.api && d.api.ok) {
+      parts.push(`API ✓ (${d.api.storage || "ok"})`);
+    } else {
+      parts.push("Tab ✗ (open ThoughtFlow)");
+    }
     parts.push(d.settings.captureEnabled ? "Popup ✓" : "Popup OFF");
-    parts.push(d.session && d.session.enabled ? "Panel ✓" : "Panel OFF");
-    parts.push(
-      d.session && (d.session.rootNodeId || d.session.currentParentNodeId) ? "Start node ✓" : "Start node ✗"
-    );
+    const panelOn = d.panel ? d.panel.enabled : d.session && d.session.enabled;
+    parts.push(panelOn ? "Panel ✓" : "Panel OFF");
+    const hasStart = d.panel
+      ? d.panel.hasStartNode
+      : d.session && (d.session.rootNodeId || d.session.currentParentNodeId);
+    parts.push(hasStart ? "Start node ✓" : "Start node ✗");
     if (d.queue > 0) parts.push(`queued: ${d.queue}`);
     pipe.textContent = (d.gate === "OK" ? "PIPELINE OK — " : `BLOCKED: ${d.gate} — `) + parts.join(" · ");
     pipe.className = "diag-pipeline " + (d.gate === "OK" ? "ok" : "bad");

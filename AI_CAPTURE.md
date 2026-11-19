@@ -5,9 +5,17 @@ and turns each pair into **one node** in your ThoughtFlow mind map — exact tex
 summarizing, no rewriting.
 
 ```
-ChatGPT / Gemini / Arena / any AI chat  →  Chrome extension  →  POST /api/ai-capture  →  ThoughtFlow tab
-     (visible DOM)                          (pairing + dedupe)     (queue + token auth)    (existing addNodeInDirection)
+ChatGPT / Gemini / Arena / any AI chat  →  Chrome extension  →  ThoughtFlow tab (direct)
+     (visible DOM)                          (pairing + dedupe)     (bridge content script → existing addNodeInDirection)
 ```
+
+**Direct mode (default, no server):** the extension delivers each Q+A pair
+straight to the open ThoughtFlow tab via `content/thoughtflow-bridge.js` —
+no capture server, no queue, no MongoDB. The website must be open in a tab
+while chatting; if it is closed the pair is dropped and the content script
+retries after its cooldown (open the website promptly and it still lands).
+The legacy server path (`server/` + `POST /api/ai-capture`) is kept for
+backward compat but is no longer on the capture path.
 
 ## Supported platforms
 
@@ -32,8 +40,9 @@ no server change needed.
 
 | Piece | Location | Purpose |
 |---|---|---|
-| Capture API | `server/` | Express + MongoDB (auto-fallback to in-memory) on port **5001** |
-| Chrome extension | `chrome-extension/` | MV3; content scripts for ChatGPT, Gemini + generic engine for ~20 AI chat sites, popup, retry queue, Quick add |
+| Direct bridge | `chrome-extension/content/thoughtflow-bridge.js` | Delivers Q+A pairs from the extension background straight to the open ThoughtFlow tab (no server) |
+| Capture API (legacy) | `server/` | Express + MongoDB (auto-fallback to in-memory) on port **5001** — kept for backward compat, no longer on the capture path |
+| Chrome extension | `chrome-extension/` | MV3; content scripts for ChatGPT, Gemini + generic engine for ~20 AI chat sites, popup, Quick add |
 | Website panel | `src/components/AiCapturePanel.jsx` | Bottom-left ON/OFF, start node, direction, status |
 | App integration | `src/App.jsx` | Poller, fixed AI parent, node creation via existing tree logic |
 | Helpers | `src/utils/aiCapture.js` | API calls, note HTML, title shortening |
