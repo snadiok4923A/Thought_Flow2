@@ -1475,6 +1475,119 @@ export default function ThoughtFlowApp() {
     }
   }, [flushPendingTextEditHistory, pushSnapshotToUndo, collapsedNodeIds, updateAiCapture, finishCaptureAcks]);
 
+  // ---- Direct capture (no server): extension → bridge → this tab -----------
+  // The extension background delivers Q+A pairs straight to this tab via
+  // content/thoughtflow-bridge.js. No queue, no MongoDB — the website must
+  // be open while chatting. Dropped pairs (panel OFF / no start node / no
+  // board) are acked as dropped so the content script retries later.
+  useEffect(() => {
+    const ack = (requestId, result) => {
+      window.postMessage({ source: 'thoughtflow-capture-ack', requestId, result }, '*');
+    };
+    const onMessage = (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (!data || typeof data.source !== 'string') return;
+
+      if (data.source === 'thoughtflow-panel-query') {
+        const s = aiCaptureStateRef.current;
+        ack(data.requestId, {
+          open: true,
+          enabled: !!s.enabled,
+          hasStartNode: !!(s.startNodeId || s.currentParentId),
+          direction: s.direction,
+        });
+        return;
+      }
+
+      if (data.source === 'thoughtflow-set-direction') {
+        const dir = normalizeCaptureDirection(data.direction);
+        updateAiCapture({ direction: dir });
+        ack(data.requestId, { ok: true });
+        return;
+      }
+
+      if (data.source !== 'thoughtflow-capture-direct') return;
+      const requestId = data.requestId;
+      const payload = data.payload || {};
+      const question = typeof payload.question === 'string' ? payload.question.trim() : '';
+      const answer = typeof payload.answer === 'string' ? payload.answer.trim() : '';
+      if (!question || !answer) {
+        ack(requestId, { received: true, created: false, reason: 'invalid' });
+        return;
+      }
+      const state = aiCaptureStateRef.current;
+      if (!state.enabled) {
+        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        return;
+      }
+      const tree = treeDataRef.current;
+      if (!tree) {
+        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        return;
+      }
+      let parentId = state.currentParentId || state.startNodeId;
+      let parent = parentId ? findNodeById(tree, parentId) : null;
+      if (!parent) {
+        updateAiCapture({ message: 'Select a node to start AI Capture.' });
+        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        return;
+      }
+      if (aiApplyingRef.current) {
+        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        return;
+      }
+      aiApplyingRef.current = true;
+      try {
+        const direction = normalizeCaptureDirection(state.direction);
+        flushPendingTextEditHistory();
+        pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
+        const { updatedTree, newNode } = addNodeInDirection(
+          tree,
+          parent.id,
+          toTreeDirection(direction),
+          shortenQuestionTitle(question)
+        );
+        if (!updatedTree || !newNode) {
+          ack(requestId, { received: true, created: false, reason: 'website-off' });
+          return;
+        }
+        newNode.notes = buildCaptureNoteHtml({
+          source: payload.source || 'manual',
+          question,
+          answer,
+        });
+        // Local dedupe ledger (same as server path) — a retried direct
+        // delivery of the same pair never creates a second node.
+        const appliedMap = appliedCaptureMapRef.current;
+        const fp = `direct-${payload.source || 'manual'}-${question.slice(0, 80)}-${answer.slice(0, 80)}`;
+        if (appliedMap[fp]) {
+          ack(requestId, { received: true, created: false, duplicate: true });
+          return;
+        }
+        appliedMap[fp] = newNode.id;
+        saveAppliedCaptureMap(appliedMap);
+        setTreeData(updatedTree);
+        setHasUnsavedChanges(true);
+        updateAiCapture({ message: '', captured: (aiCaptureStateRef.current.captured || 0) + 1 });
+        console.log(`[AI Capture] Direct node created: ${newNode.id} (parent ${parent.id})`);
+        ack(requestId, { received: true, created: true });
+      } catch (err) {
+        console.error('[AI Capture] Direct node creation failed:', err && err.message, err);
+        ack(requestId, { received: true, created: false, reason: 'website-off' });
+      } finally {
+        aiApplyingRef.current = false;
+      }
+    };
+    window.addEventListener('message', onMessage);
+    // Bridge present = extension installed + tab open. Show Connected Yes
+    // immediately; the server poller below must not overwrite it to No.
+    if (typeof window !== 'undefined' && window.__thoughtflow_bridge) {
+      updateAiCapture({ connected: true });
+    }
+    return () => window.removeEventListener('message', onMessage);
+  }, [flushPendingTextEditHistory, pushSnapshotToUndo, collapsedNodeIds, updateAiCapture]);
+
   // Poll the capture backend: adopt shared-session changes (popup direction,
   // connection, counters) and create nodes for newly completed Q+A pairs.
   useEffect(() => {
@@ -1486,7 +1599,10 @@ export default function ThoughtFlowApp() {
       try {
         sync = await fetchCaptureSync();
       } catch {
-        if (!cancelled && state.connected) updateAiCapture({ connected: false });
+        // Direct mode (bridge present, no server) still counts as connected.
+        const direct = typeof window !== 'undefined' && !!window.__thoughtflow_bridge;
+        if (!cancelled && !direct && state.connected) updateAiCapture({ connected: false });
+        if (!cancelled && direct && !state.connected) updateAiCapture({ connected: true });
         return;
       }
       if (cancelled || !sync) return;

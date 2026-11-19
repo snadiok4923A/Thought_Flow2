@@ -1,13 +1,23 @@
 // ThoughtFlow AI Capture — background service worker (MV3).
-// Receives completed Q+A pairs from content scripts, checks the website session
-// (capture ON + start node), forwards to POST /api/ai-capture, retries on failure,
-// and heartbeats the API so the website can show real extension connectivity.
+// Receives completed Q+A pairs from content scripts and delivers them
+// DIRECTLY to the open ThoughtFlow tab (no server, no queue, no MongoDB):
+// background → thoughtflow-bridge content script → React app → node.
+// The website must be open in a tab while chatting; if it is closed the
+// pair is dropped and the content script retries after its cooldown.
+// (Legacy server queue/heartbeat code below is kept for backward compat
+// but is no longer on the capture path.)
 // Conversation text is never written to console logs.
 
 importScripts("hosted-config.js", "utils/debug.js", "utils/api.js");
 
 const MAX_QUEUE = 50;
 const MAX_TRIES = 40; // ~20 min of retries at 30 s per flush — bridges most server restarts
+
+const THOUGHTFLOW_URLS = [
+  "https://snadiok4923a.github.io/Thought_Flow2/*",
+  "http://localhost:5173/*",
+  "http://localhost:5174/*",
+];
 
 function dbg(event, detail) {
   globalThis.TFDebug.log(event, detail);
@@ -77,6 +87,37 @@ async function flushQueue() {
   await setQueue(remaining);
 }
 
+// ---- Direct delivery to the open ThoughtFlow tab ---------------------------
+// No server, no queue. Finds the ThoughtFlow tab and asks its bridge
+// content script to hand the pair to the React app, which creates the
+// node (or drops it if the panel is OFF / no start node / no board).
+async function findThoughtFlowTab() {
+  try {
+    const tabs = await chrome.tabs.query({ url: THOUGHTFLOW_URLS });
+    return tabs && tabs.length ? tabs[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function deliverDirect(payload) {
+  const tab = await findThoughtFlowTab();
+  if (!tab || typeof tab.id !== "number") return { delivered: false, reason: "website-off" };
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: "TF_CAPTURE_DIRECT",
+      requestId,
+      payload,
+    });
+    if (!result || !result.received) return { delivered: false, reason: "website-off" };
+    return { delivered: true, result };
+  } catch (err) {
+    dbg("direct-error", (err && err.message) || "no bridge");
+    return { delivered: false, reason: "website-off" };
+  }
+}
+
 async function handleCapture(payload) {
   const settings = await TFApi.getSettings();
   if (!settings.captureEnabled) {
@@ -84,35 +125,23 @@ async function handleCapture(payload) {
     return { drop: true, reason: "extension-off" };
   }
 
-  const gate = await sessionAllowsCapture();
-  if (gate.retry) {
-    const q = await getQueue();
-    q.push({ payload, tries: 0, at: Date.now() });
-    await setQueue(q);
-    dbg("queued", `API offline, queue=${q.length}`);
-    return { accepted: true, queued: true };
-  }
-  if (!gate.ok) {
-    dbg("reject", "website session gate closed");
+  const direct = await deliverDirect(payload);
+  if (!direct.delivered) {
+    // No ThoughtFlow tab (or bridge not ready) — drop; the content script
+    // retries after its cooldown, so opening the website promptly still works.
+    dbg("reject", "no ThoughtFlow tab open (direct)");
     return { drop: true, reason: "website-off" };
   }
-
-  try {
-    const res = await TFApi.postCapture(payload);
-    dbg("api", res && res.duplicate ? "200 duplicate" : "201 created");
-    if (res && !res.duplicate) await bumpCounter();
-    return { accepted: true, duplicate: !!(res && res.duplicate) };
-  } catch (err) {
-    dbg("api-error", `HTTP ${err && err.status}`);
-    if (err.status === 400 || err.status === 401) {
-      // Permanent failure (validation/auth) — do not retry forever.
-      return { drop: true, reason: err.status === 401 ? "auth" : "invalid" };
-    }
-    const q = await getQueue();
-    q.push({ payload, tries: 0, at: Date.now() });
-    await setQueue(q);
-    return { accepted: true, queued: true };
+  const r = direct.result || {};
+  if (r.created) {
+    dbg("direct-ok", "node created");
+    await bumpCounter();
+    return { accepted: true, duplicate: !!r.duplicate };
   }
+  // Tab received it but the website dropped it (panel OFF / no start node /
+  // no board open). Transient — content script retries after cooldown.
+  dbg("direct-dropped", r.reason || "website-off");
+  return { drop: true, reason: r.reason || "website-off" };
 }
 
 // ---- Heartbeat: proves extension ↔ API connectivity for the website --------
@@ -127,11 +156,21 @@ async function heartbeat() {
 // ---- One-click diagnostics for the popup ------------------------------------
 async function diagnose() {
   const settings = await TFApi.getSettings();
+  // Direct mode: is a ThoughtFlow tab open, and what does its panel say?
+  const tab = await findThoughtFlowTab();
+  let panel = null;
+  if (tab) {
+    try {
+      const requestId = `panel-${Date.now()}`;
+      panel = await chrome.tabs.sendMessage(tab.id, { type: "TF_GET_PANEL_STATE", requestId });
+    } catch {
+      panel = null;
+    }
+  }
+  // Legacy server check (kept for backward compat; not on the direct path).
   let api = null;
   try {
     const h = await TFApi.health();
-    // Only the ThoughtFlow API answers with ok/status fields — JSON from any
-    // other server at that URL must not count as connected.
     const real = !!h && (h.ok === true || h.status === "ok");
     api = real
       ? { ok: true, storage: h.storage, status: h.status || "ok" }
@@ -140,28 +179,25 @@ async function diagnose() {
     api = { ok: false, status: err && err.status, url: err && err.url };
   }
   let session = null;
-  let sessionErr = null;
   try {
     session = await TFApi.getSession();
-  } catch (e) {
-    sessionErr = e && e.status;
+  } catch {
+    session = null;
   }
-  const gate = !api.ok
-    ? "API unreachable"
-    : !settings.captureEnabled
-      ? "popup Capture is OFF"
-      : sessionErr === 401
-        ? "invalid capture token (popup Settings)"
-        : !session
-          ? "session unreadable"
-          : !session.enabled
-            ? "website panel is OFF"
-            : !(session.rootNodeId || session.currentParentNodeId)
-              ? "no start node selected in ThoughtFlow"
-              : "OK";
+  const gate = !settings.captureEnabled
+    ? "popup Capture is OFF"
+    : !tab
+      ? "no ThoughtFlow tab open (direct mode needs the website open)"
+      : !panel
+        ? "website panel unreadable (reload the ThoughtFlow tab)"
+        : !panel.enabled
+          ? "website panel is OFF"
+          : !panel.hasStartNode
+            ? "no start node selected in ThoughtFlow"
+            : "OK";
   const { retryQueue = [] } = await chrome.storage.local.get("retryQueue");
   const { tfDebugLog = [] } = await chrome.storage.local.get("tfDebugLog");
-  return { settings, api, session, gate, queue: retryQueue.length, events: tfDebugLog.slice(-15).reverse() };
+  return { settings, api, session, panel, gate, queue: retryQueue.length, events: tfDebugLog.slice(-15).reverse() };
 }
 
 // ---- Messaging ---------------------------------------------------------------
@@ -179,12 +215,57 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_HEALTH") {
-    TFApi.health()
-      .then((h) => {
+    // Direct mode first: an open ThoughtFlow tab with the bridge counts
+    // as connected (no server needed). Fall back to server health for
+    // backward compat with hosted/localhost deployments.
+    (async () => {
+      const tab = await findThoughtFlowTab();
+      if (tab) return sendResponse({ connected: true, storage: "direct", ok: true, status: "ok" });
+      try {
+        const h = await TFApi.health();
         const real = !!h && (h.ok === true || h.status === "ok");
-        sendResponse(real ? { connected: true, ...h } : { connected: false });
-      })
-      .catch(() => sendResponse({ connected: false }));
+        return sendResponse(real ? { connected: true, ...h } : { connected: false });
+      } catch {
+        return sendResponse({ connected: false });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "TF_GET_PANEL_STATE") {
+    (async () => {
+      const tab = await findThoughtFlowTab();
+      if (!tab) return sendResponse({ open: false });
+      try {
+        const requestId = `panel-${Date.now()}`;
+        const result = await chrome.tabs.sendMessage(tab.id, {
+          type: "TF_GET_PANEL_STATE",
+          requestId,
+        });
+        return sendResponse(result || { open: false });
+      } catch {
+        return sendResponse({ open: false });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "TF_SET_DIRECTION_DIRECT") {
+    (async () => {
+      const tab = await findThoughtFlowTab();
+      if (!tab) return sendResponse({ ok: false });
+      try {
+        const requestId = `dir-${Date.now()}`;
+        const result = await chrome.tabs.sendMessage(tab.id, {
+          type: "TF_SET_DIRECTION",
+          requestId,
+          direction: msg.direction,
+        });
+        return sendResponse(result || { ok: false });
+      } catch {
+        return sendResponse({ ok: false });
+      }
+    })();
     return true;
   }
 
