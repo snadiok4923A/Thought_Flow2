@@ -36,8 +36,6 @@
     "https://chat.z.ai/*",
     "https://chat.minimax.io/*",
     "https://snadiok4923a.github.io/Thought_Flow2/*",
-    "http://localhost:5173/*",
-    "http://localhost:5174/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
@@ -92,8 +90,8 @@
     {
       "matches": [
         "https://snadiok4923a.github.io/Thought_Flow2/*",
-        "http://localhost:5173/*",
-        "http://localhost:5174/*"
+        "http://localhost/*",
+        "http://127.0.0.1/*"
       ],
       "js": ["content/thoughtflow-bridge.js"],
       "run_at": "document_idle"
