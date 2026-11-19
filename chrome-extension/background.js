@@ -13,10 +13,12 @@ importScripts("hosted-config.js", "utils/debug.js", "utils/api.js");
 const MAX_QUEUE = 50;
 const MAX_TRIES = 40; // ~20 min of retries at 30 s per flush — bridges most server restarts
 
+// NOTE: Chrome match patterns do NOT support ports — "http://localhost/*"
+// matches localhost on ANY port (5173, 5174, …). Never use :5173 here.
 const THOUGHTFLOW_URLS = [
   "https://snadiok4923a.github.io/Thought_Flow2/*",
-  "http://localhost:5173/*",
-  "http://localhost:5174/*",
+  "http://localhost/*",
+  "http://127.0.0.1/*",
 ];
 
 function dbg(event, detail) {
