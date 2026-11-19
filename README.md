@@ -1,3 +1,28 @@
+# ThoughtFlow2 (SmartNote)
+
+Mind-map note app — React + Vite frontend, gh-pages hosted at
+[snadiok4923a.github.io/Thought_Flow2](https://snadiok4923a.github.io/Thought_Flow2/).
+
+**AI Chat Capture** turns Q+A pairs from AI chat sites (ChatGPT, Gemini, Arena and
+more) into mind-map nodes automatically — see **[AI_CAPTURE.md](AI_CAPTURE.md)**.
+
+## Develop
+
+```bash
+npm install
+npm run dev        # frontend → http://localhost:5173/Thought_Flow2/
+cd server && npm install && npm start   # capture API → http://localhost:5001
+```
+
+## Deploy
+
+`npm run deploy` builds and publishes to the `gh-pages` branch. The capture
+backend is hosted separately (see AI_CAPTURE.md → "Hosting the capture API");
+the frontend reads `VITE_CAPTURE_API_BASE` / `VITE_CAPTURE_TOKEN` at build time,
+or you can change the API base at runtime in the panel's ⚙ Settings.
+
+---
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

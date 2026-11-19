@@ -11,21 +11,46 @@ function setStatus(text) {
   $("statusLine").textContent = text;
 }
 
+// Known AI chat hosts → display name. Hosts here run the generic capture
+// engine (content/selectors-generic.js); ChatGPT and Gemini have dedicated ones.
+const KNOWN_PLATFORMS = [
+  [/https:\/\/(chatgpt\.com|chat\.openai\.com)\//, "ChatGPT"],
+  [/https:\/\/gemini\.google\.com\//, "Gemini"],
+  [/https:\/\/(www\.|lmarena\.|chat\.lmsys\.org)?arena\.ai\//, "Arena"],
+  [/https:\/\/grok\.com\//, "Grok"],
+  [/https:\/\/grok\.x\.ai\//, "Grok"],
+  [/https:\/\/x\.ai\//, "Grok"],
+  [/https:\/\/claude\.ai\//, "Claude"],
+  [/https:\/\/(chat\.)?deepseek\.com\//, "DeepSeek"],
+  [/https:\/\/(www\.)?perplexity\.ai\//, "Perplexity"],
+  [/https:\/\/copilot\.microsoft\.com\//, "Copilot"],
+  [/https:\/\/(www\.)?poe\.com\//, "Poe"],
+  [/https:\/\/(chat\.)?you\.com\//, "You.com"],
+  [/https:\/\/duck\.ai\//, "DuckDuckGo"],
+  [/https:\/\/(www\.)?meta\.ai\//, "Meta AI"],
+  [/https:\/\/chat\.mistral\.ai\//, "Mistral"],
+  [/https:\/\/chat\.qwen\.ai\//, "Qwen"],
+  [/https:\/\/(www\.)?kimi\.com\//, "Kimi"],
+  [/https:\/\/felo\.ai\//, "Felo"],
+  [/https:\/\/chat\.z\.ai\//, "GLM (Z.ai)"],
+  [/https:\/\/chat\.minimax\.io\//, "MiniMax"],
+];
+
 async function detectPlatform() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = (tab && tab.url) || "";
   let name = "Unsupported page";
   let on = false;
-  if (/https:\/\/(chatgpt\.com|chat\.openai\.com)\//.test(url)) {
-    name = "ChatGPT";
-    on = true;
-  } else if (/https:\/\/gemini\.google\.com\//.test(url)) {
-    name = "Gemini";
-    on = true;
+  for (const [re, label] of KNOWN_PLATFORMS) {
+    if (re.test(url)) {
+      name = label;
+      on = true;
+      break;
+    }
   }
   $("platformName").textContent = name;
   $("platformDot").className = "dot " + (on ? "on" : "off");
-  if (!on) setStatus("Open ChatGPT or Gemini to capture.");
+  if (!on) setStatus("Open an AI chat (ChatGPT, Gemini, Arena…) to capture, or use Quick add.");
 }
 
 async function refreshHealth() {
@@ -134,7 +159,7 @@ $("saveAdvanced").addEventListener("click", async () => {
 function renderEvents(events) {
   const box = $("diagLog");
   if (!events || !events.length) {
-    box.textContent = "No events yet. Interact with ChatGPT, then re-run.";
+    box.textContent = "No events yet. Interact with an AI chat, then re-run.";
     return;
   }
   box.innerHTML = events
@@ -176,6 +201,37 @@ async function runDiagnostics() {
 }
 
 $("runDiag").addEventListener("click", runDiagnostics);
+
+// ---- Quick add: works on any AI site (even ones the content script can't read) ----
+$("quickAddBtn").addEventListener("click", async () => {
+  const question = $("qaQuestion").value.trim();
+  const answer = $("qaAnswer").value.trim();
+  const status = $("quickAddStatus");
+  if (!question || !answer) {
+    status.textContent = "Both the question and the answer are required.";
+    return;
+  }
+  status.textContent = "Storing…";
+  try {
+    const res = await TFApi.postCapture({
+      source: "manual",
+      conversationId: "",
+      question,
+      answer,
+    });
+    status.textContent =
+      res && res.duplicate
+        ? "Already captured (duplicate)."
+        : "Stored — it becomes a node when ThoughtFlow is open with the panel ON.";
+    if (!(res && res.duplicate)) {
+      $("qaQuestion").value = "";
+      $("qaAnswer").value = "";
+    }
+    await refreshStats();
+  } catch (err) {
+    status.textContent = "Could not reach the capture API (" + ((err && err.message) || "offline") + ").";
+  }
+});
 
 // Show the latest persisted events as soon as the popup opens.
 chrome.storage.local.get({ tfDebugLog: [] }, (r) => renderEvents(r.tfDebugLog.slice(-15).reverse()));

@@ -1,23 +1,76 @@
 # AI Chat Auto Capture
 
-Captures complete **Question + Answer** pairs from ChatGPT / Gemini in your browser
+Captures complete **Question + Answer** pairs from AI chat sites in your browser
 and turns each pair into **one node** in your ThoughtFlow mind map — exact text, no
-summarizing, no rewriting, no AI APIs.
+summarizing, no rewriting.
 
 ```
-ChatGPT / Gemini  →  Chrome extension  →  POST /api/ai-capture  →  ThoughtFlow tab
-   (visible DOM)        (pairing + dedupe)     (queue + token auth)    (existing addNodeInDirection)
+ChatGPT / Gemini / Arena / any AI chat  →  Chrome extension  →  POST /api/ai-capture  →  ThoughtFlow tab
+     (visible DOM)                          (pairing + dedupe)     (queue + token auth)    (existing addNodeInDirection)
 ```
+
+## Supported platforms
+
+| Tier | Sites | How it works |
+|---|---|---|
+| Dedicated selectors | ChatGPT, Gemini | Multi-strategy DOM readers in `content/selectors-*.js` |
+| Generic engine | Arena (arena.ai / lmarena.ai), Grok, Claude, DeepSeek, Perplexity, Copilot, Poe, You.com, DuckDuckGo AI, Meta AI, Mistral, Qwen, Kimi, Felo, GLM (z.ai), MiniMax | Heuristic alternating-thread reader in `content/selectors-generic.js` — poor man's fallback, ships diagnostics (`strategy=roles|turns|alternating|none`) |
+| Quick add (always works) | **Any** AI site | Extension popup → "Quick add" → paste question + answer → stored as a pending pair, becomes a node exactly like auto-capture |
+
+The generic engine reads the **alternating** structure of chat UIs
+(user asks → assistant answers). If a site changes its markup, `strategy=none`
+shows up in diagnostics — that site then needs either a dedicated
+`content/selectors-<site>.js` (best) or the popup's Quick add.
+
+New sites are one `matches` entry away: add the host to `manifest.json`
+(`content_scripts` + `host_permissions`) and to `HOST_PLATFORMS` in
+`content/selectors-generic.js` (pick any short lowercase `source` tag), then
+reload the extension. The backend accepts any `^[a-z][a-z0-9-]{0,31}$` source —
+no server change needed.
 
 ## Components
 
 | Piece | Location | Purpose |
 |---|---|---|
 | Capture API | `server/` | Express + MongoDB (auto-fallback to in-memory) on port **5001** |
-| Chrome extension | `chrome-extension/` | MV3; content scripts for ChatGPT & Gemini, popup, retry queue |
+| Chrome extension | `chrome-extension/` | MV3; content scripts for ChatGPT, Gemini + generic engine for ~20 AI chat sites, popup, retry queue, Quick add |
 | Website panel | `src/components/AiCapturePanel.jsx` | Bottom-left ON/OFF, start node, direction, status |
 | App integration | `src/App.jsx` | Poller, fixed AI parent, node creation via existing tree logic |
 | Helpers | `src/utils/aiCapture.js` | API calls, note HTML, title shortening |
+
+## Why it used to work "sometimes" — root causes fixed (v1.1.0)
+
+1. **Lost answers on transient drops.** The content script marked a pair as
+   "seen" *before* the server accepted it. If the website panel was OFF
+   (or the API blipped), the pair was silently dropped forever. Now a pair is
+   only marked seen after accept/queue/duplicate; transient drops retry every
+   30 s.
+2. **Duplicate nodes from lost acks.** The website created nodes but acked
+   fire-and-forget; a failed ack left the pair "pending" and the next 2.5 s
+   poll re-created the node. Now applied capture ids are persisted in
+   localStorage (`thoughtflow-ai-applied`), known-applied items are re-acked
+   (never re-created), and failed acks retry until they land.
+3. **Three switches, no feedback.** Capture only works when the extension popup
+   is ON **and** the website panel is ON **and** a start node is selected —
+   any miss meant silence. The popup diagnostics now also tell you to check the
+   panel, and drops retry automatically instead of vanishing.
+4. **Arena and every other AI chat were unsupported** (no content scripts at
+   all) — the generic engine + Quick add cover them now.
+5. **Backend died with the terminal.** In-memory storage lost all pending
+   captures on restart; `server/.env` was committed to the (public) repo.
+   `.env` is now untracked/ignored, `.env.example` documents MongoDB + token,
+   and the API can be hosted (below) so it does not depend on your PC.
+6. **ChatGPT selector rot** — multi-strategy readers remain; the generic
+   engine adds a third independent layer for other sites.
+
+Remaining caveats (honest list):
+- Generic engine is best-effort. Arena markup could not be verified from the
+  build sandbox — if auto-capture misses there, Quick add always works.
+- Capture only happens for pairs created **after** the page had a baseline
+  (old conversations never retro-capture) and after the answer is stable.
+- The ThoughtFlow tab only creates nodes while a board is open; until then
+  pairs wait as "pending" on the server — nothing is lost, but nothing
+  appears either.
 
 ## Local testing (full walkthrough)
 
@@ -56,7 +109,7 @@ after the text is stable for `stabilityMs` (default 2000 ms).
 ## Debugging a capture that never arrives
 
 1. Reload the extension in `chrome://extensions` after ANY file change, then
-   **refresh the ChatGPT tab** (content scripts only inject into pages loaded
+   **refresh the AI chat tab** (content scripts only inject into pages loaded
    afterwards — this is the most common reason nothing happens).
 2. Open the extension popup → **Diagnostics** → **Run connection test**.
    It reports the exact broken link, e.g. `API unreachable`,
@@ -86,6 +139,35 @@ after the text is stable for `stabilityMs` (default 2000 ms).
    corrected URL too. Offline is the honest status until health returns the
    ThoughtFlow `status/ok` JSON from the real backend.
 
+## Hosting the capture API (works from anywhere, not just your PC)
+
+`localhost:5001` only works while this PC runs the server. The website on
+GitHub Pages **can point at any hosted instance** — no rebuild needed:
+
+1. Deploy `server/` to any host that injects `PORT` — Render, Railway, Fly.io
+   (all have free tiers):
+   - Root directory: `server`  ·  Build: `npm install`  ·  Start: `npm start`
+   - Health check path: `/api/health`
+2. Set environment variables on the host:
+   - `MONGO_URI` — **required** here. Use an Atlas free (M0) cluster, e.g.
+     `mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/thoughtflow`.
+     (In-memory mode loses all pending captures on every restart.)
+   - `CAPTURE_TOKEN` — generate one:
+     `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+   - `ALLOWED_ORIGINS=https://snadiok4923a.github.io` (locks CORS down)
+   - `PORT` is injected by the host automatically.
+3. Point the **website** at it — either:
+   - (easiest, no rebuild) open the panel → ⚙ Settings → set
+     `API base URL = https://<your-app>.onrender.com/api` and the token, or
+   - (build-time) build the site with `VITE_CAPTURE_API_BASE` /
+     `VITE_CAPTURE_TOKEN` set (Vite exposes only `VITE_*` vars).
+4. Point the **extension** at it — popup → Settings → same URL and token →
+   save → reload the extension in `chrome://extensions`.
+5. CORS: the hosted API reflects only `ALLOWED_ORIGINS`; the extension's
+   `chrome-extension://` origin needs no listing (extension messaging is not
+   subject to page CORS — the API just must answer with CORS headers, which
+   it always does).
+
 ## Chrome extension popup
 
 - **Capture** — extension-level switch (website panel is the second switch; both must be ON)
@@ -110,7 +192,7 @@ after the text is stable for `stabilityMs` (default 2000 ms).
    ```
 5. Go to [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole),
    pay the one-time fee, upload the zip, fill in the store listing
-   (declare host permissions: chatgpt.com, gemini.google.com, your API origin),
+   (declare host permissions: the AI chat hosts you want capture on — see manifest.json — plus your API origin),
    submit for review.
 6. Alternative: distribute the zip privately inside your org — users load it
    unpacked or via enterprise policy.
@@ -120,7 +202,7 @@ after the text is stable for `stabilityMs` (default 2000 ms).
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
 | GET | `/api/health` | — | liveness + storage mode |
-| POST | `/api/ai-capture` | token | store one Q+A pair (idempotent, `duplicate: true` on repeat) |
+| POST | `/api/ai-capture` | token | store one Q+A pair (idempotent, `duplicate: true` on repeat; 429 after 30 writes/min/IP) |
 | GET | `/api/ai-capture/pending` | token | un-applied pairs for the frontend |
 | POST | `/api/ai-capture/:id/ack` | token | frontend confirms node creation |
 | GET/PUT | `/api/ai-capture/session` | token | `{enabled, direction, rootNodeId, currentParentNodeId}` |
@@ -131,6 +213,6 @@ Auth: `X-Capture-Token: <token>` or `Authorization: Bearer <token>`.
 
 ## Privacy
 
-- Content scripts run **only** on `chatgpt.com`, `chat.openai.com`, `gemini.google.com`.
+- Content scripts run **only** on the AI chat hosts listed in `manifest.json` (chatgpt.com, gemini.google.com, arena.ai and ~20 others).
 - Only message text is read — never passwords, cookies, history or other tabs.
 - Server logs contain IDs and fingerprints only, never conversation content.

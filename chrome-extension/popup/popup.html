@@ -30,6 +30,20 @@
         <span class="value"><span id="platformDot" class="dot off"></span><span id="platformName">—</span></span>
       </section>
 
+      <details id="quickAdd">
+        <summary>Quick add (works on ANY AI site)</summary>
+        <p class="diag-hint">
+          Chat somewhere the extension can't read? Paste the question and answer — it is stored
+          as a pending Q+A pair and becomes one mind-map node exactly like auto-capture.
+        </p>
+        <label for="qaQuestion">Question</label>
+        <textarea id="qaQuestion" rows="2" spellcheck="false" placeholder="What is a PC?"></textarea>
+        <label for="qaAnswer">Answer</label>
+        <textarea id="qaAnswer" rows="4" spellcheck="false" placeholder="A PC is…"></textarea>
+        <button id="quickAddBtn" class="secondary">Store in ThoughtFlow</button>
+        <p class="diag-hint" id="quickAddStatus"></p>
+      </details>
+
       <section class="row">
         <span class="label">Direction</span>
         <select id="direction">
@@ -55,7 +69,8 @@
         <div class="diag-log" id="diagLog"></div>
         <p class="diag-hint">
           After changing extension files: reload it in chrome://extensions, then
-          refresh the ChatGPT tab.
+          refresh the AI chat tab. A capture dropped by a closed website panel is retried
+          every 30s; toggle the panel ON and the next scan picks it up.
         </p>
       </details>
 

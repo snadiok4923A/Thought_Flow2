@@ -242,6 +242,27 @@ details input {
   line-height: 1.5;
 }
 
+#quickAdd summary {
+  color: var(--purple);
+}
+
+#quickAdd textarea {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+}
+
+#quickAdd textarea:focus {
+  border-color: var(--purple);
+}
+
 footer {
   border-top: 1px solid var(--border);
   padding: 8px 14px;

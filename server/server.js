@@ -6,18 +6,56 @@ const captureAuth = require("./lib/auth");
 const store = require("./lib/store");
 
 const app = express();
-// CAPTURE_PORT wins over PORT (some shells export PORT=0 for ephemeral binds)
+// CAPTURE_PORT wins over PORT (some shells export PORT=0 for ephemeral binds;
+// hosts like Render/Railway inject PORT — that one is honoured automatically)
 const PORT = parseInt(process.env.CAPTURE_PORT || process.env.PORT, 10) || 5001;
 
-// The extension (chrome-extension:// origin) and the local Vite app both call this API.
+// The extension (chrome-extension:// origin) and the website both call this API.
+// ALLOWED_ORIGINS=comma,separated,origins locks this down for a hosted deployment;
+// unset reflects any origin (fine for local development).
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 app.use(
   cors({
-    origin: true,
+    origin: allowedOrigins.length
+      ? (origin, cb) => {
+          // Allow same-origin/curl (no Origin header) and explicitly listed origins.
+          if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+          return cb(new Error("Not allowed by CORS"));
+        }
+      : true,
     allowedHeaders: ["Content-Type", "Authorization", "X-Capture-Token"],
     methods: ["GET", "POST", "PUT", "OPTIONS"],
   })
 );
 app.use(express.json({ limit: "1mb" }));
+
+// Tiny fixed-window rate limiter for capture writes — no extra dependencies.
+// Guards a publicly hosted API from token-guessing / flooding. 30 writes/min/IP.
+const CAPTURE_RATE_LIMIT = parseInt(process.env.CAPTURE_RATE_LIMIT, 10) || 30;
+const rateHits = new Map(); // ip -> { windowStart, count }
+setInterval(() => {
+  const cutoff = Date.now() - 120_000;
+  for (const [ip, rec] of rateHits) if (rec.windowStart < cutoff) rateHits.delete(ip);
+}, 60_000).unref();
+
+function captureRateLimit(req, res, next) {
+  const ip = req.ip || req.socket.remoteAddress || "unknown";
+  const nowTs = Date.now();
+  let rec = rateHits.get(ip);
+  if (!rec || nowTs - rec.windowStart >= 60_000) {
+    rec = { windowStart: nowTs, count: 0 };
+    rateHits.set(ip, rec);
+  }
+  rec.count += 1;
+  if (rec.count > CAPTURE_RATE_LIMIT) {
+    return res.status(429).json({ message: "Too many captures — slow down." });
+  }
+  next();
+}
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -34,7 +72,7 @@ router.use(captureAuth);
 
 // POST /api/ai-capture — one complete Question + Answer pair → one pending node.
 // Idempotent: identical pairs return the original id with duplicate: true.
-router.post("/", async (req, res) => {
+router.post("/", captureRateLimit, async (req, res) => {
   try {
     const check = store.validateCapture(req.body || {});
     if (check.error) return res.status(400).json({ message: check.error });
@@ -123,8 +161,6 @@ router.get("/stats", async (req, res) => {
 // GET /api/ai-capture/sync — one round-trip: session + pending + captured count.
 router.get("/sync", async (req, res) => {
   try {
-    // TEMP debug: which frontend origin is polling (referee for pending items).
-    console.log(`[sync] poll ${new Date().toISOString()} from ${req.get("referer") || req.get("origin") || "unknown-origin"}`);
     const [session, items, captured] = await Promise.all([
       store.getSession(),
       store.listPending(req.query.limit),

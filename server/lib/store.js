@@ -7,7 +7,9 @@ const crypto = require("crypto");
 
 const MAX_QUESTION = 8000;
 const MAX_ANSWER = 120000;
-const VALID_SOURCES = ["chatgpt", "gemini"];
+// Any lowercase platform tag is accepted ("chatgpt", "gemini", "arena",
+// "deepseek", "manual", …) — new AI chat sites work without a server release.
+const VALID_SOURCE = /^[a-z][a-z0-9-]{0,31}$/;
 const VALID_DIRECTIONS = ["right", "below", "bottom", "down"];
 
 let mode = "memory"; // 'mongo' | 'memory'
@@ -50,7 +52,7 @@ function normalizeDirection(dir) {
 
 function validateCapture(body) {
   const source = String(body.source || "").toLowerCase();
-  if (!VALID_SOURCES.includes(source)) return { error: "Invalid or missing source." };
+  if (!VALID_SOURCE.test(source)) return { error: "Invalid or missing source." };
 
   const question = typeof body.question === "string" ? body.question.trim() : "";
   const answer = typeof body.answer === "string" ? body.answer.trim() : "";
@@ -90,7 +92,7 @@ function defineModels() {
   const captureSchema = new mongoose.Schema(
     {
       fingerprint: { type: String, required: true, unique: true, index: true },
-      source: { type: String, enum: VALID_SOURCES, required: true },
+      source: { type: String, required: true, maxlength: 32 },
       conversationId: { type: String, default: "" },
       question: { type: String, required: true },
       answer: { type: String, required: true },
