@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Captures complete Q+A pairs from ChatGPT, Gemini, Arena and other AI chat sites exactly as visible and sends them directly to your open ThoughtFlow tab to become mind-map nodes (no server needed).",
-  "permissions": ["storage", "alarms", "tabs"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting"
+  ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -44,13 +49,28 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["utils/debug.js", "content/capture-core.js", "content/selectors-chatgpt.js", "content/chatgpt.js"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "utils/debug.js",
+        "content/capture-core.js",
+        "content/selectors-chatgpt.js",
+        "content/chatgpt.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://gemini.google.com/*"],
-      "js": ["utils/debug.js", "content/capture-core.js", "content/selectors-gemini.js", "content/gemini.js"],
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "utils/debug.js",
+        "content/capture-core.js",
+        "content/selectors-gemini.js",
+        "content/gemini.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -84,7 +104,12 @@
         "https://chat.z.ai/*",
         "https://chat.minimax.io/*"
       ],
-      "js": ["utils/debug.js", "content/capture-core.js", "content/selectors-generic.js", "content/generic.js"],
+      "js": [
+        "utils/debug.js",
+        "content/capture-core.js",
+        "content/selectors-generic.js",
+        "content/generic.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -93,7 +118,9 @@
         "http://localhost/*",
         "http://127.0.0.1/*"
       ],
-      "js": ["content/thoughtflow-bridge.js"],
+      "js": [
+        "content/thoughtflow-bridge.js"
+      ],
       "run_at": "document_idle"
     }
   ],
