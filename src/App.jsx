@@ -62,6 +62,11 @@ const syncCaptureSession = (patch) => hasDirectBridge() ? Promise.resolve(null) 
 
 // The fallback key is short and hashes the FULL answer, not just its first 80 characters.
 const directCaptureKey = (payload, question, answer) => {
+  // A stable turn key identifies one question through every streamed answer
+  // revision. The old full-answer fingerprint made each revision a new node.
+  if (typeof payload.turnKey === "string" && payload.turnKey) {
+    return `turn-${payload.source || 'unknown'}-${payload.turnKey}`;
+  }
   if (typeof payload.fingerprint === "string" && payload.fingerprint) return `direct-${payload.fingerprint}`;
   const fullText = `${payload.source || 'manual'}\u0000${question}\u0000${answer}`;
   let hash = 2166136261;
@@ -1571,9 +1576,34 @@ export default function ThoughtFlowApp() {
         // Deduplicate BEFORE adding a node or recording an undo snapshot.
         const appliedMap = appliedCaptureMapRef.current;
         const fp = directCaptureKey(payload, question, answer);
-        if (appliedMap[fp]) {
-          ack(requestId, { received: true, created: false, duplicate: true });
-          return;
+        const nextNoteHtml = buildCaptureNoteHtml({ question, answer });
+        const recorded = appliedMap[fp];
+        if (recorded) {
+          const nodeId = typeof recorded === 'string' ? recorded : recorded.nodeId;
+          const existing = nodeId ? findNodeById(tree, nodeId) : null;
+          if (existing) {
+            // Update only notes that are still identical to our previous
+            // generated answer. Never overwrite a note the user has edited.
+            if (recorded && typeof recorded === 'object' &&
+                recorded.noteHtml === existing.notes &&
+                nextNoteHtml !== existing.notes) {
+              flushPendingTextEditHistory();
+              pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
+              const nextTree = updateNodeInTree(tree, nodeId, { notes: nextNoteHtml });
+              treeDataRef.current = nextTree;
+              setTreeData(nextTree);
+              setActiveNode(prev => prev?.id === nodeId ? { ...prev, notes: nextNoteHtml } : prev);
+              appliedMap[fp] = { ...recorded, noteHtml: nextNoteHtml };
+              saveAppliedCaptureMap(appliedMap);
+              setHasUnsavedChanges(true);
+              ack(requestId, { received: true, created: false, updated: true });
+              return;
+            }
+            ack(requestId, { received: true, created: false, duplicate: true });
+            return;
+          }
+          // The previously captured node was deleted or another board loaded.
+          delete appliedMap[fp];
         }
         const direction = normalizeCaptureDirection(state.direction);
         flushPendingTextEditHistory();
@@ -1588,15 +1618,14 @@ export default function ThoughtFlowApp() {
           ack(requestId, { received: true, created: false, reason: 'website-off' });
           return;
         }
-        newNode.notes = buildCaptureNoteHtml({
-          source: payload.source || 'manual',
-          question,
-          answer,
-        });
+        newNode.notes = nextNoteHtml;
         // Local dedupe ledger (same as server path) — a retried direct
         // delivery of the same pair never creates a second node.
-        appliedMap[fp] = newNode.id;
+        appliedMap[fp] = payload.turnKey
+          ? { nodeId: newNode.id, noteHtml: nextNoteHtml }
+          : newNode.id;
         saveAppliedCaptureMap(appliedMap);
+        treeDataRef.current = updatedTree;
         setTreeData(updatedTree);
         setHasUnsavedChanges(true);
         updateAiCapture({ message: '', captured: (aiCaptureStateRef.current.captured || 0) + 1 });
