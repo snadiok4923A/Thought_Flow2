@@ -96,7 +96,15 @@ async function flushQueue() {
 async function findThoughtFlowTab() {
   try {
     const tabs = await chrome.tabs.query({ url: THOUGHTFLOW_URLS });
-    return tabs && tabs.length ? tabs[0] : null;
+    // Chrome URL match patterns cannot filter ports. Exclude unrelated local apps.
+    return (tabs || []).find((tab) => {
+      try {
+        const url = new URL(tab.url || "");
+        return url.pathname === "/Thought_Flow2" || url.pathname.startsWith("/Thought_Flow2/");
+      } catch {
+        return false;
+      }
+    }) || null;
   } catch {
     return null;
   }
@@ -135,9 +143,9 @@ async function handleCapture(payload) {
     return { drop: true, reason: "website-off" };
   }
   const r = direct.result || {};
-  if (r.created) {
-    dbg("direct-ok", "node created");
-    await bumpCounter();
+  if (r.created || r.duplicate) {
+    dbg("direct-ok", r.duplicate ? "duplicate acknowledged" : "node created");
+    if (!r.duplicate) await bumpCounter();
     return { accepted: true, duplicate: !!r.duplicate };
   }
   // Tab received it but the website dropped it (panel OFF / no start node /
@@ -277,8 +285,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_STATS") {
-    TFApi.getStats()
-      .then((s) => sendResponse(s))
+    chrome.storage.local.get({ capturedCount: 0 })
+      .then(({ capturedCount }) => sendResponse({ captured: capturedCount }))
       .catch(() => sendResponse({ captured: null }));
     return true;
   }
