@@ -45,7 +45,7 @@ function extract({ userText, assistantText, userLines = [], assistantBody = null
   };
   context.globalThis = context;
   vm.runInNewContext(selectorFile, context);
-  return context.TF_SELECTORS.collectMessages().map(({ role, text }) => ({ role, text }));
+  return Array.from(context.TF_SELECTORS.collectMessages(), ({ role, text }) => ({ role, text }));
 }
 
 const first = extract({
