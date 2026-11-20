@@ -7,6 +7,35 @@ const $ = (id) => document.getElementById(id);
 let settings = null;
 let session = null;
 
+// Developer-only UI: preserve Diagnostics and Settings without showing them
+// in the everyday popup. Shift-click the header logo or press Alt+Shift+D
+// while the extension popup has focus; both also toggle the tools back off.
+function setDeveloperToolsVisible(visible) {
+  const tools = $("developerTools");
+  tools.hidden = !visible;
+  if (!visible) {
+    $("diagnostics").open = false;
+    $("advanced").open = false;
+  }
+}
+
+$("developerLogo").addEventListener("click", (event) => {
+  if (event.shiftKey) {
+    setDeveloperToolsVisible($("developerTools").hidden);
+  }
+});
+
+$("closeDeveloperTools").addEventListener("click", () => {
+  setDeveloperToolsVisible(false);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.altKey && event.shiftKey && event.key.toLowerCase() === "d") {
+    event.preventDefault();
+    setDeveloperToolsVisible($("developerTools").hidden);
+  }
+});
+
 function setStatus(text) {
   $("statusLine").textContent = text;
 }

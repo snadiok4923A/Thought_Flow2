@@ -120,7 +120,9 @@ after the text is stable for `stabilityMs` (default 2000 ms).
 1. Reload the extension in `chrome://extensions` after ANY file change, then
    **refresh the AI chat tab** (content scripts only inject into pages loaded
    afterwards — this is the most common reason nothing happens).
-2. Open the extension popup → **Diagnostics** → **Run connection test**.
+2. Open the extension popup, **Shift-click the purple hexagon logo** (or press
+   **Alt+Shift+D** while the popup is focused) to reveal the developer-only
+   tools → **Diagnostics** → **Run connection test**.
    It reports the exact broken link, e.g. `API unreachable`,
    `invalid capture token`, `popup Capture is OFF`, `website panel is OFF`,
    `no start node selected`, or `PIPELINE OK`.
@@ -216,7 +218,11 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 - **Direction** — writes to the shared session; applies to future nodes
 - **Connection** — API health + storage mode
 - **Captured** — number of applied conversations
-- **Settings** — API base URL, capture token, streaming stability ms
+- **Quick add** — manually add a Q+A pair directly when automatic capture is unavailable
+- **Diagnostics / Settings** — hidden in normal use. For troubleshooting, **Shift-click
+  the purple hexagon logo** or press **Alt+Shift+D** inside the popup to toggle
+  developer tools; use **Close** to hide them again. Their code and controls
+  remain available without cluttering the everyday UI.
 
 ## Publishing the extension later
 
