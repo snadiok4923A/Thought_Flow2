@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bold, Italic, List, ZoomIn, ZoomOut, Sparkles } from 'lucide-react';
 import { hasTextContent } from '../utils/treeUtils';
-const RichTextEditor = ({ initialContent, onChange, onAsk, asking = false, askStatus = '' }) => {
+const RichTextEditor = ({ initialContent, onChange, onAsk, asking = false, askStatus = '', forceSyncKey = 0 }) => {
   const editorRef = useRef(null);
+  const lastForceSyncKeyRef = useRef(forceSyncKey);
   const [noteZoom, setNoteZoom] = useState(1);
 
   useEffect(() => {
@@ -14,12 +15,16 @@ const RichTextEditor = ({ initialContent, onChange, onAsk, asking = false, askSt
 
   // Sync external changes (e.g. from Undo/Redo) when the editor is not actively being edited
   useEffect(() => {
-    if (editorRef.current && document.activeElement !== editorRef.current) {
+    // An answer arriving from ChatGPT must appear even if the editor still
+    // has focus; ordinary prop updates must not overwrite active typing.
+    const force = forceSyncKey !== lastForceSyncKeyRef.current;
+    if (editorRef.current && (force || document.activeElement !== editorRef.current)) {
       if (editorRef.current.innerHTML !== (initialContent || '')) {
         editorRef.current.innerHTML = initialContent || '';
       }
     }
-  }, [initialContent]);
+    lastForceSyncKeyRef.current = forceSyncKey;
+  }, [initialContent, forceSyncKey]);
 
   const execCmd = (cmd) => {
     document.execCommand(cmd, false, null);
