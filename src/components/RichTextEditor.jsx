@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bold, Italic, List, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { Bold, Italic, List, ZoomIn, ZoomOut, Sparkles } from 'lucide-react';
 import { hasTextContent } from '../utils/treeUtils';
-const RichTextEditor = ({ initialContent, onChange }) => {
+const RichTextEditor = ({ initialContent, onChange, onAsk, asking = false, askStatus = '' }) => {
   const editorRef = useRef(null);
   const [noteZoom, setNoteZoom] = useState(1);
 
@@ -77,6 +77,27 @@ const RichTextEditor = ({ initialContent, onChange }) => {
           >
             <List size={16}/>
           </button>
+          {/* This uses the existing Chrome Extension and logged-in ChatGPT tab.
+              It does not call any API or create a second AI editor. */}
+          {onAsk && (
+            <button
+              type="button"
+              disabled={asking}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const editor = editorRef.current;
+                const selection = window.getSelection();
+                const selected = selection && editor?.contains(selection.anchorNode) &&
+                  editor?.contains(selection.focusNode) ? selection.toString().trim() : '';
+                onAsk(selected || editor?.innerText || '');
+              }}
+              className="ml-1 inline-flex items-center gap-1 px-2 py-1.5 text-[11px] rounded-md border border-purple-500/40 text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 disabled:opacity-50 disabled:cursor-wait"
+              title="Send this question to your open ChatGPT tab and add its answer here"
+            >
+              <Sparkles size={13} />
+              <span>{asking ? 'Asking...' : 'Ask ChatGPT'}</span>
+            </button>
+          )}
         </div>
 
         {/* Right Side: Zoom Controls */}
@@ -107,6 +128,12 @@ const RichTextEditor = ({ initialContent, onChange }) => {
           </button>
         </div>
       </div>
+
+      {askStatus && (
+        <div role="status" aria-live="polite" className="px-3 py-2 text-[11px] text-purple-200 bg-zinc-900 border-b border-zinc-800">
+          {askStatus}
+        </div>
+      )}
 
       {/* Editor Content Area */}
       <div 
