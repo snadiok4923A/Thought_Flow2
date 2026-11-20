@@ -211,6 +211,26 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### ChatGPT replies and Chrome/Brave message ports
+
+The extension acknowledges the Notes **Ask ChatGPT** request immediately,
+then sends the completed response in a separate short-lived message.
+No extension message port remains open for the entire AI generation time.
+The background stores only the request ID and destination tab IDs in
+`chrome.storage.session` until delivery or expiry; it does **not** save
+questions or answers to storage.
+
+If a request fails or takes too long, check the open ChatGPT tab **before
+clicking Ask again**. In particular, a submitted question might already have
+an answer there even when the ThoughtFlow tab could not receive it.
+
+Run the regression checks from the repository root:
+
+```bash
+node chrome-extension/test/ask-chatgpt-note.mjs
+node chrome-extension/test/notes-port-routing.mjs
+```
+
 ## Ask ChatGPT directly from an existing node's Notes (no API)
 
 This feature uses the SAME Chrome/Brave extension and an already-open,
