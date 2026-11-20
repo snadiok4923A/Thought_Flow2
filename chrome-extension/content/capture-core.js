@@ -219,7 +219,14 @@
         const { pairs, msgCount } = collectPairs();
         const streaming = selectors.isStreaming();
         const enabled = state.settings.captureEnabled;
-        const stabilityMs = state.settings.stabilityMs || DEFAULT_STABILITY_MS;
+        // ChatGPT may briefly show a tiny partial reply while its streaming
+        // control disappears/reappears. A 2-second pause was enough to send a
+        // 9-character fragment, then a second 973-character "answer" as a new
+        // node. Keep Gemini and other platforms at their existing settings.
+        const baseStabilityMs = state.settings.stabilityMs || DEFAULT_STABILITY_MS;
+        const stabilityMs = selectors.platform === "chatgpt"
+          ? Math.max(4500, baseStabilityMs)
+          : baseStabilityMs;
         const now = Date.now();
 
         // Throttled scan heartbeat — only when the observable state changes.

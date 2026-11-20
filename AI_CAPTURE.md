@@ -211,6 +211,36 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### Diagnostic clues for a partial answer or unmatched Notes request (v1.1.6)
+
+If Diagnostics says `answer-seen q=... a=9c`, then two seconds later
+`send`/`direct-ok node created`, then later another much larger answer
+for the same question, ChatGPT's streaming state was briefly undetected
+and the first answer fragment was accepted too early. ChatGPT now uses a
+**minimum 4.5-second unchanged-text window** (other AI services keep
+their previous stability setting). This mitigates early fragments; it
+is not a guarantee when ChatGPT pauses longer than the window.
+
+For Notes **Ask ChatGPT**, the extension logs these content-free stages:
+
+- `note-job-started`: a Notes request was accepted and associated with
+  a ChatGPT tab (the log contains only lengths and a tab ID).
+- `note-answer-captured`: a completed Q+A was matched to that request
+  and delivered to the original Notes panel.
+- `note-qa-loose-match`: the Q+A matched the active Notes request after
+  ignoring punctuation/case differences.
+- `note-qa-unmatched`: a Q+A came from a ChatGPT tab with an active Notes
+  request but did not match its question; the normal capture path still
+  applies, and no answer is silently substituted.
+- `chatgpt-qa-normal`: a Q+A came through the ordinary capture path
+  with no active Notes request in that tab.
+
+These events do **not** log the question/answer text. When troubleshooting,
+click Ask **once**, inspect the ChatGPT tab, then inspect the most recent
+events in popup **Shift-click purple logo → Diagnostics**. The log now
+distinguishes "question was not associated with a Notes job" from "a
+matching answer was delivered", so further changes can use evidence.
+
 ### Repairing an already-open ChatGPT tab after an extension reload
 
 The Notes Ask feature must have **both** its send script and the ordinary

@@ -200,8 +200,12 @@ const NOTE_JOB_TTL_MS = 180000; // React has its own shorter visible timeout.
 const noteJobKey = (requestId) => NOTE_JOB_PREFIX + requestId;
 
 // Match the exact pending question without persisting its raw text.
-function noteQuestionKey(question) {
-  const value = String(question || "").replace(/\s+/g, " ").trim();
+function noteQuestionKey(question, loose = false) {
+  // Strict key stays backward-compatible. The optional loose key ignores
+  // punctuation/case differences introduced by rich-text/UI extraction,
+  // but is only considered on the SAME ChatGPT tab for an active Ask job.
+  const plain = String(question || "").replace(/\s+/g, " ").trim();
+  const value = loose ? plain.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "") : plain;
   let hash = 2166136261;
   for (let i = 0; i < value.length; i++) {
     hash ^= value.charCodeAt(i);
@@ -299,6 +303,8 @@ async function startChatGPTNoteJob(sender, question, requestId) {
         thoughtflowTabId: sourceTabId,
         chatgptTabId: target.id,
         questionKey: noteQuestionKey(text),
+        looseQuestionKey: noteQuestionKey(text, true),
+        questionLength: text.length,
         started: false,
         expiresAt: Date.now() + NOTE_JOB_TTL_MS,
       },
@@ -314,6 +320,7 @@ async function startChatGPTNoteJob(sender, question, requestId) {
     }
     const current = (await chrome.storage.session.get(key))[key];
     if (current) {
+      dbg("note-job-started", `q=${text.length}c target-tab=${target.id}`);
       await chrome.storage.session.set({ [key]: { ...current, started: true } });
       // In case ChatGPT navigated before the START acknowledgement reached us,
       // also attempt recovery here. A live watcher rejects redundant RESUME.
@@ -522,13 +529,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           typeof payload.answer === "string" && payload.answer.trim()) {
         const all = await chrome.storage.session.get(null);
         const key = noteQuestionKey(payload.question);
-        const entry = Object.entries(all).find(([k, job]) =>
+        const looseKey = noteQuestionKey(payload.question, true);
+        // Include recently completed jobs in dedupe lookup: a late normal
+        // Q+A scan must NOT become a child node after the Notes reply arrived.
+        const jobsInTab = Object.entries(all).filter(([k, job]) =>
           k.startsWith(NOTE_JOB_PREFIX) &&
           job?.chatgptTabId === sender.tab.id &&
-          job.questionKey === key &&
           job.expiresAt > Date.now()
         );
+        const activeInTab = jobsInTab.filter(([, job]) => !job.completed);
+        const entry = jobsInTab.find(([, job]) => job.questionKey === key ||
+          job.looseQuestionKey === looseKey
+        );
+        if (!entry) {
+          // The diagnostics log contains no private question/answer text.
+          dbg(activeInTab.length ? "note-qa-unmatched" : "chatgpt-qa-normal",
+            `q=${payload.question.length}c answer=${payload.answer.length}c pending=${activeInTab.length}`);
+        }
         if (entry) {
+          if (entry[1].questionKey !== key) {
+            dbg("note-qa-loose-match", `q=${payload.question.length}c`);
+          }
           const requestId = entry[0].slice(NOTE_JOB_PREFIX.length);
           const delivery = await forwardChatGPTNoteResult(sender, {
             requestId,
