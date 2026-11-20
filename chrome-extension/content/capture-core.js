@@ -352,13 +352,15 @@
       globalThis.__tfOutboundQuestionKeys = keys;
       keys.add(key);
       const { pairs } = collectPairs();
-      pairs.forEach((pair) => {
-        if (noteQuestionKey(pair.question) !== key) return;
+      // Only the very latest completed exchange can be the question just
+      // submitted from Notes. Older identical questions remain baselined.
+      const pair = pairs[pairs.length - 1];
+      if (pair && noteQuestionKey(pair.question) === key) {
         const fp = pairFingerprint(selectors.platform, state.convId, pair);
         state.seen.delete(fp);
         state.stats.delete(fp);
         state.retryAfter.delete(fp);
-      });
+      }
       schedule();
     };
 
