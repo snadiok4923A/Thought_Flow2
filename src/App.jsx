@@ -1866,7 +1866,15 @@ export default function ThoughtFlowApp() {
         const onResult = (event) => {
           if (event.source !== window || event.origin !== window.location.origin) return;
           const data = event.data;
-          if (data?.source === 'thoughtflow-ask-chatgpt-result' && data.requestId === requestId) {
+          if (data?.requestId !== requestId) return;
+          if (data.source === 'thoughtflow-ask-chatgpt-started') {
+            setNoteAsk((prev) => prev.nodeId === nodeId && prev.busy
+              ? { ...prev, message: 'Question sent. Waiting for ChatGPT answer...' }
+              : prev
+            );
+            return;
+          }
+          if (data.source === 'thoughtflow-ask-chatgpt-result') {
             finish(data.result || { ok: false, error: 'No response from the extension.' });
           }
         };
