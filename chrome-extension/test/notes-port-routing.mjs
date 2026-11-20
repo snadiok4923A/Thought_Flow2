@@ -80,7 +80,7 @@ const ack = await send({
   type: "TF_ASK_CHATGPT", requestId, question: "What is AI?",
 }, noteSender);
 assert.deepEqual(JSON.parse(JSON.stringify(ack)), { ok: true, started: true });
-assert.deepEqual(injections[0].files, ["content/chatgpt-ask.js"]);
+assert.deepEqual(Array.from(injections[0].files), ["content/chatgpt-ask.js"]);
 assert.equal(deliveries[0].message.type, "TF_CHATGPT_ASK_START");
 assert.equal(deliveries[0].message.requestId, requestId);
 assert.equal(deliveries[0].tabId, 10);
