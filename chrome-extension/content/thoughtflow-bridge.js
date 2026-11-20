@@ -27,6 +27,17 @@ const pending = new Map(); // requestId -> sendResponse
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
+  if (msg.type === "TF_NOTES_AI_RESULT") {
+    // An independent, short message from the background after ChatGPT finishes.
+    // Do not hold a chrome.runtime.sendMessage() port open during generation.
+    window.postMessage({
+      source: "thoughtflow-ask-chatgpt-result",
+      requestId: msg.requestId,
+      result: msg.result || { ok: false, error: "No response was received from ChatGPT." },
+    }, window.location.origin);
+    sendResponse({ received: true });
+    return;
+  }
   if (msg.type === "TF_CAPTURE_DIRECT") {
     const requestId = msg.requestId || String(Date.now());
     pending.set(requestId, sendResponse);
@@ -84,9 +95,15 @@ window.addEventListener("message", (event) => {
      return;
    }
    try {
-     chrome.runtime.sendMessage({ type: "TF_ASK_CHATGPT", question }, (result) => {
+     chrome.runtime.sendMessage({ type: "TF_ASK_CHATGPT", requestId, question }, (result) => {
        const error = chrome.runtime.lastError?.message;
-       respond(error ? { ok: false, error } : (result || { ok: false, error: "No response from the extension." }));
+       // Successful START is only an acknowledgement. The completed answer
+       // comes later via TF_NOTES_AI_RESULT, NOT on this message port.
+       if (error) {
+         respond({ ok: false, error: "Could not start ChatGPT: " + error });
+       } else if (!result?.ok || !result.started) {
+         respond({ ok: false, error: result?.error || "Extension could not start ChatGPT." });
+       }
      });
    } catch (err) {
      respond({ ok: false, error: err?.message || "Extension is unavailable." });
