@@ -211,6 +211,38 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### Notes answer delivery through the existing Q+A capture path
+
+The primary way to receive a ChatGPT reply for a Notes **Ask ChatGPT**
+request is now the extension's **existing Q+A capture engine**. The same
+collector that recognizes ordinary ChatGPT questions and answers now
+sends a Notes-originated, completed Q+A to the extension background.
+The background matches its pending request using the originating ChatGPT
+tab and a fingerprint of the question, then returns only the answer to
+the original ThoughtFlow node.
+
+**Do not skip Notes questions inside capture-core.js.** The background
+must route them to their existing node instead of making another child.
+The separate ChatGPT answer watcher is retained only as a fallback; a
+completed request is acknowledged once, even if both routes report it.
+A temporary Notes delivery failure is retriable and does not create a
+child node.
+
+After merging, reload the unpacked Chrome/Brave extension. Check that
+the extension is version **1.1.4** and refresh both the ThoughtFlow and
+ChatGPT tabs. Use a *new* test question, since a previous identical
+Q+A may already be in the capture deduplication ledger.
+
+From the repository root, run:
+
+```bash
+node chrome-extension/test/notes-answer-capture.mjs
+```
+
+This regression test checks normal history baselining, Notes question
+capture after ChatGPT navigation, same-node answer routing, duplicate
+protection, and retry after a temporary Notes-tab failure.
+
 ### Navigating to a new ChatGPT conversation
 
 ChatGPT may change its URL (for example from `chatgpt.com/` to
