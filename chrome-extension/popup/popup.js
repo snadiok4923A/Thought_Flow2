@@ -229,25 +229,25 @@ $("quickAddBtn").addEventListener("click", async () => {
     status.textContent = "Both the question and the answer are required.";
     return;
   }
-  status.textContent = "Storing…";
+  status.textContent = "Sending directly to ThoughtFlow…";
   try {
-    const res = await TFApi.postCapture({
-      source: "manual",
-      conversationId: "",
-      question,
-      answer,
+    const res = await chrome.runtime.sendMessage({
+      type: "TF_TRY_SEND",
+      payload: { source: "manual", conversationId: "", question, answer },
     });
-    status.textContent =
-      res && res.duplicate
-        ? "Already captured (duplicate)."
-        : "Stored — it becomes a node when ThoughtFlow is open with the panel ON.";
-    if (!(res && res.duplicate)) {
+    if (!res || res.drop || (!res.accepted && !res.duplicate)) {
+      const reason = res && res.reason ? res.reason : "no response";
+      status.textContent = "Could not add (" + reason + "). Open ThoughtFlow, select a node and turn capture ON.";
+      return;
+    }
+    status.textContent = res.duplicate ? "Already captured (duplicate)." : "Node added to ThoughtFlow.";
+    if (!res.duplicate) {
       $("qaQuestion").value = "";
       $("qaAnswer").value = "";
     }
     await refreshStats();
   } catch (err) {
-    status.textContent = "Could not reach the capture API (" + ((err && err.message) || "offline") + ").";
+    status.textContent = "Direct capture failed: " + ((err && err.message) || "extension unavailable");
   }
 });
 

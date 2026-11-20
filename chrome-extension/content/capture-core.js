@@ -210,7 +210,12 @@
           dbg("scan", `msgs=${msgCount} pairs=${pairs.length} streaming=${streaming} capture=${enabled} strategy=${strategy}`);
         }
 
-        if (!pairs.length) return;
+        // An empty conversation has no existing Q+A pairs to baseline.
+        // Without this, the first newly completed exchange is lost.
+        if (!pairs.length) {
+          state.baselineDone = true;
+          return;
+        }
 
         const lastIdx = pairs.length - 1;
 

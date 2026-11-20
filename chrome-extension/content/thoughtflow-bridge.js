@@ -9,7 +9,10 @@
 // while chatting. If the tab is closed, the background drops the pair
 // and the content script retries after its cooldown.
 
-window.__thoughtflow_bridge = true;
+// Chrome extension content scripts run in an isolated JavaScript world.
+// Use a DOM attribute (shared with the page) for presence detection.
+document.documentElement.setAttribute("data-thoughtflow-bridge", "ready");
+window.postMessage({ source: "thoughtflow-bridge-ready" }, "*");
 
 const pending = new Map(); // requestId -> sendResponse
 
