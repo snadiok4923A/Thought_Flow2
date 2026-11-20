@@ -46,7 +46,10 @@ const context = {
       },
     },
     scripting: {
-      async executeScript({ target, files }) {
+      async executeScript({ target, files, func }) {
+        // Simulate a ChatGPT tab that existed before the extension reload:
+        // only the Notes Ask script can run, capture selectors are missing.
+        if (func) return [{ result: { ready: false, selectors: false } }];
         injections.push({ tabId: target.tabId, files });
       },
     },
@@ -81,7 +84,13 @@ const ack = await send({
   type: "TF_ASK_CHATGPT", requestId, question: "What is AI?",
 }, noteSender);
 assert.deepEqual(JSON.parse(JSON.stringify(ack)), { ok: true, started: true });
-assert.deepEqual(Array.from(injections[0].files), ["content/chatgpt-ask.js"]);
+assert.deepEqual(Array.from(injections[0].files), [
+  "utils/debug.js",
+  "content/capture-core.js",
+  "content/selectors-chatgpt.js",
+  "content/chatgpt.js",
+]);
+assert.deepEqual(Array.from(injections[1].files), ["content/chatgpt-ask.js"]);
 assert.equal(deliveries[0].message.type, "TF_CHATGPT_ASK_START");
 assert.equal(deliveries[0].message.requestId, requestId);
 assert.equal(deliveries[0].tabId, 10);
@@ -146,4 +155,4 @@ const lastNoteDelivery = deliveries.filter((d) => d.message.type === "TF_NOTES_A
 assert.equal(lastNoteDelivery.message.result.ok, false);
 assert.match(lastNoteDelivery.message.result.error, /Composer unavailable/);
 
-console.log("PASS: immediate start, navigation recovery, fingerprint, tab validation and result forwarding");
+console.log("PASS: missing ChatGPT selector repair, immediate start, navigation recovery and result forwarding");
