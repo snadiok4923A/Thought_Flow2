@@ -258,8 +258,9 @@
           if (retryAt && now < retryAt) return;
           if (retryAt && now >= retryAt) state.retryAfter.delete(fp);
 
-          // Capture OFF → remember so nothing retro-captures after re-enable.
-          if (!enabled) {
+          // Capture OFF blocks normal auto-capture, but a deliberate Ask
+          // ChatGPT button press must still return its answer to that Note.
+          if (!enabled && !pendingNote) {
             remember(fp);
             dbg("skipped-off", `q=${p.question.length}c`);
             return;
