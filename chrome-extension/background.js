@@ -191,6 +191,62 @@ async function handleCapture(payload) {
   return { drop: true, reason: r.reason || "website-off" };
 }
 
+// Reverse direction: a user clicks Ask ChatGPT inside an existing ThoughtFlow
+// note. Use ONLY the already-open ChatGPT browser tab and send the answer back
+// to that same note. This is browser UI automation, not an OpenAI API call.
+async function askChatGPTFromNote(sender, question) {
+  const sourceUrl = sender?.url || sender?.tab?.url || "";
+  if (!isThoughtFlowUrl(sourceUrl)) {
+    return { ok: false, error: "Request was not sent from ThoughtFlow." };
+  }
+  const text = typeof question === "string" ? question.trim() : "";
+  if (!text || text.length > 12000) {
+    return { ok: false, error: "Write a question of at most 12,000 characters in the Notes panel." };
+  }
+
+  const tabs = await chrome.tabs.query({
+    url: ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+  });
+  const chatTabs = tabs.filter((tab) => {
+    try {
+      const url = new URL(tab.url || "");
+      return (url.hostname === "chatgpt.com" || url.hostname === "chat.openai.com") &&
+        url.protocol === "https:" && typeof tab.id === "number";
+    } catch { return false; }
+  });
+  // Prefer ChatGPT in the same window; never open a different account or
+  // create a new conversation without the user's explicit action.
+  const sameWindow = chatTabs.filter((tab) => tab.windowId === sender.tab?.windowId);
+  const candidates = sameWindow.length ? sameWindow : chatTabs;
+  candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  const target = candidates[0];
+  if (!target) {
+    return { ok: false, error: "Open ChatGPT in another tab and sign in, then try again." };
+  }
+
+  try {
+    // Self-contained and idempotent; also works on a tab opened before the
+    // latest extension reload, when declarative content scripts are stale.
+    await chrome.scripting.executeScript({
+      target: { tabId: target.id },
+      files: ["content/chatgpt-ask.js"],
+    });
+    const result = await chrome.tabs.sendMessage(target.id, {
+      type: "TF_CHATGPT_ASK",
+      question: text,
+    });
+    if (!result?.ok || typeof result.answer !== "string" || !result.answer.trim()) {
+      return { ok: false, error: result?.error || "ChatGPT did not return an answer." };
+    }
+    return { ok: true, answer: result.answer };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "Could not communicate with ChatGPT: " + ((err && err.message) || "unknown error"),
+    };
+  }
+}
+
 // ---- Heartbeat: proves extension ↔ API connectivity for the website --------
 async function heartbeat() {
   try {
@@ -251,6 +307,13 @@ async function diagnose() {
 // ---- Messaging ---------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
+
+  if (msg.type === "TF_ASK_CHATGPT") {
+    askChatGPTFromNote(sender, msg.question)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err?.message || "ChatGPT communication failed." }));
+    return true;
+  }
 
   if (msg.type === "TF_TRY_SEND") {
     handleCapture(msg.payload || {})
