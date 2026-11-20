@@ -211,6 +211,29 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### Repairing an already-open ChatGPT tab after an extension reload
+
+The Notes Ask feature must have **both** its send script and the ordinary
+ChatGPT Q+A capture engine available. Previously the background injected
+only `content/chatgpt-ask.js` into older open tabs, leaving
+`TF_SELECTORS`/`TFCapture` missing. The question could be sent but the
+answer would remain stuck at **Waiting for ChatGPT answer...**.
+
+Version **1.1.5** probes the ISOLATED content-script world and restores
+`utils/debug.js`, `content/capture-core.js`,
+`content/selectors-chatgpt.js`, and `content/chatgpt.js` when needed,
+then starts the Notes Ask script. The capture entry point is guarded to
+avoid duplicate capture observers. Selector fallback now checks the
+conversation-turn user/assistant markup if the author-role markup is
+incomplete.
+
+This also runs before navigation recovery. To confirm that Chrome
+actually loaded the fix, check v1.1.5 in the extension manager and
+refresh the ThoughtFlow and ChatGPT tabs. If the problem continues,
+collect the extension Diagnostics log (Shift-click the purple logo in
+the popup) and the ChatGPT DOM selector counts; this identifies whether
+the capture engine ran, found Q+A, or failed to deliver it.
+
 ### Notes answer delivery through the existing Q+A capture path
 
 The primary way to receive a ChatGPT reply for a Notes **Ask ChatGPT**

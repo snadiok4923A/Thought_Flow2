@@ -221,6 +221,39 @@ function isChatGPTUrl(raw) {
   } catch { return false; }
 }
 
+// The Notes Ask helper was previously injected into already-open ChatGPT
+// tabs WITHOUT the selectors/capture engine. When a browser extension is
+// reloaded, old tabs may not have the declarative content scripts installed.
+// Ensure every prerequisite exists in the same ISOLATED extension world.
+async function ensureChatGPTCapture(tabId) {
+  if (typeof tabId !== "number") throw new Error("Invalid ChatGPT tab.");
+  const probe = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: () => ({
+      ready: !!(globalThis.__tfChatGPTCaptureStarted &&
+        globalThis.TF_SELECTORS?.collectMessages &&
+        globalThis.TFCapture?.start),
+      selectors: !!globalThis.TF_SELECTORS?.collectMessages,
+    }),
+  });
+  const status = Array.isArray(probe) ? probe[0]?.result : null;
+  if (status?.ready) return { ready: true, repaired: false };
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    files: [
+      "utils/debug.js",
+      "content/capture-core.js",
+      "content/selectors-chatgpt.js",
+      "content/chatgpt.js",
+    ],
+  });
+  dbg("chatgpt-capture-repaired", status?.selectors ? "capture init" : "selectors + capture");
+  return { ready: true, repaired: true };
+}
+
 // The first response only confirms that the question was accepted for
 // delivery. The finished answer returns later in TF_CHATGPT_ASK_RESULT.
 async function startChatGPTNoteJob(sender, question, requestId) {
@@ -253,8 +286,10 @@ async function startChatGPTNoteJob(sender, question, requestId) {
 
   const key = noteJobKey(requestId);
   try {
+    await ensureChatGPTCapture(target.id);
     await chrome.scripting.executeScript({
       target: { tabId: target.id },
+      world: "ISOLATED",
       files: ["content/chatgpt-ask.js"],
     });
     // Save routing data before sending; a fast ChatGPT error may return
@@ -310,8 +345,10 @@ async function resumeChatGPTNoteJobs(tabId) {
   if (!jobs.length) return;
   for (const [key, job] of jobs) {
     try {
+      await ensureChatGPTCapture(tabId);
       await chrome.scripting.executeScript({
         target: { tabId },
+        world: "ISOLATED",
         files: ["content/chatgpt-ask.js"],
       });
       const requestId = key.slice(NOTE_JOB_PREFIX.length);
