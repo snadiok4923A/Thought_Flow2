@@ -191,60 +191,126 @@ async function handleCapture(payload) {
   return { drop: true, reason: r.reason || "website-off" };
 }
 
-// Reverse direction: a user clicks Ask ChatGPT inside an existing ThoughtFlow
-// note. Use ONLY the already-open ChatGPT browser tab and send the answer back
-// to that same note. This is browser UI automation, not an OpenAI API call.
-async function askChatGPTFromNote(sender, question) {
+// Node Notes -> extension -> logged-in ChatGPT -> SAME Note.
+// Never hold a Chrome/Brave MV3 message port open for the full AI response.
+// Use chrome.storage.session to retain routing IDs across service-worker sleeps;
+// NO conversation/question/answer text is stored here.
+const NOTE_JOB_PREFIX = "tf-note-job:";
+const NOTE_JOB_TTL_MS = 180000; // React has its own shorter visible timeout.
+const noteJobKey = (requestId) => NOTE_JOB_PREFIX + requestId;
+const validNoteRequestId = (id) => typeof id === "string" &&
+  /^tf-notes-[A-Za-z0-9_-]{1,100}$/.test(id);
+
+function isChatGPTUrl(raw) {
+  try {
+    const url = new URL(raw || "");
+    return url.protocol === "https:" &&
+      (url.hostname === "chatgpt.com" || url.hostname === "chat.openai.com");
+  } catch { return false; }
+}
+
+// The first response only confirms that the question was accepted for
+// delivery. The finished answer returns later in TF_CHATGPT_ASK_RESULT.
+async function startChatGPTNoteJob(sender, question, requestId) {
   const sourceUrl = sender?.url || sender?.tab?.url || "";
-  if (!isThoughtFlowUrl(sourceUrl)) {
-    return { ok: false, error: "Request was not sent from ThoughtFlow." };
+  const sourceTabId = sender?.tab?.id;
+  if (!isThoughtFlowUrl(sourceUrl) || typeof sourceTabId !== "number") {
+    return { ok: false, error: "Request was not sent from a ThoughtFlow tab." };
+  }
+  if (!validNoteRequestId(requestId)) {
+    return { ok: false, error: "Invalid Notes request ID." };
   }
   const text = typeof question === "string" ? question.trim() : "";
   if (!text || text.length > 12000) {
-    return { ok: false, error: "Write a question of at most 12,000 characters in the Notes panel." };
+    return { ok: false, error: "Write a question of at most 12,000 characters in Notes." };
   }
 
   const tabs = await chrome.tabs.query({
     url: ["https://chatgpt.com/*", "https://chat.openai.com/*"],
   });
-  const chatTabs = tabs.filter((tab) => {
-    try {
-      const url = new URL(tab.url || "");
-      return (url.hostname === "chatgpt.com" || url.hostname === "chat.openai.com") &&
-        url.protocol === "https:" && typeof tab.id === "number";
-    } catch { return false; }
-  });
-  // Prefer ChatGPT in the same window; never open a different account or
-  // create a new conversation without the user's explicit action.
-  const sameWindow = chatTabs.filter((tab) => tab.windowId === sender.tab?.windowId);
-  const candidates = sameWindow.length ? sameWindow : chatTabs;
+  const validTabs = tabs.filter((tab) =>
+    isChatGPTUrl(tab.url) && typeof tab.id === "number"
+  );
+  const sameWindow = validTabs.filter((tab) => tab.windowId === sender.tab?.windowId);
+  const candidates = sameWindow.length ? sameWindow : validTabs;
   candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
   const target = candidates[0];
   if (!target) {
-    return { ok: false, error: "Open ChatGPT in another tab and sign in, then try again." };
+    return { ok: false, error: "Open a logged-in ChatGPT tab and try again." };
   }
 
+  const key = noteJobKey(requestId);
   try {
-    // Self-contained and idempotent; also works on a tab opened before the
-    // latest extension reload, when declarative content scripts are stale.
     await chrome.scripting.executeScript({
       target: { tabId: target.id },
       files: ["content/chatgpt-ask.js"],
     });
-    const result = await chrome.tabs.sendMessage(target.id, {
-      type: "TF_CHATGPT_ASK",
+    // Save routing data before sending; a fast ChatGPT error may return
+    // before the initial START acknowledgement reaches this worker.
+    await chrome.storage.session.set({
+      [key]: {
+        thoughtflowTabId: sourceTabId,
+        chatgptTabId: target.id,
+        expiresAt: Date.now() + NOTE_JOB_TTL_MS,
+      },
+    });
+    const started = await chrome.tabs.sendMessage(target.id, {
+      type: "TF_CHATGPT_ASK_START",
+      requestId,
       question: text,
     });
-    if (!result?.ok || typeof result.answer !== "string" || !result.answer.trim()) {
-      return { ok: false, error: result?.error || "ChatGPT did not return an answer." };
+    if (!started?.ok || !started.started) {
+      await chrome.storage.session.remove(key);
+      return { ok: false, error: started?.error || "ChatGPT could not start answering." };
     }
-    return { ok: true, answer: result.answer };
+    return { ok: true, started: true };
   } catch (err) {
+    await chrome.storage.session.remove(key).catch(() => {});
     return {
       ok: false,
-      error: "Could not communicate with ChatGPT: " + ((err && err.message) || "unknown error"),
+      error: "Could not start ChatGPT: " + ((err && err.message) || "extension unavailable"),
     };
   }
+}
+
+// This is a NEW short-lived message from the ChatGPT content script. A paused
+// or restarted service worker can pick up the routing data from session storage.
+async function forwardChatGPTNoteResult(sender, msg) {
+  const requestId = msg?.requestId;
+  if (!validNoteRequestId(requestId) || !isChatGPTUrl(sender?.url || sender?.tab?.url)) {
+    return { ok: false, error: "Invalid ChatGPT reply origin." };
+  }
+  const key = noteJobKey(requestId);
+  const stored = (await chrome.storage.session.get(key))[key];
+  if (!stored || stored.chatgptTabId !== sender?.tab?.id || stored.expiresAt < Date.now()) {
+    return { ok: false, error: "The Notes request is no longer active." };
+  }
+
+  const result = msg.result?.ok && typeof msg.result.answer === "string" && msg.result.answer.trim()
+    ? { ok: true, answer: msg.result.answer }
+    : { ok: false, error: String(msg.result?.error || "ChatGPT did not return an answer.") };
+
+  try {
+    const response = await chrome.tabs.sendMessage(stored.thoughtflowTabId, {
+      type: "TF_NOTES_AI_RESULT",
+      requestId,
+      result,
+    });
+    if (!response?.received) throw new Error("ThoughtFlow did not acknowledge the reply.");
+    await chrome.storage.session.remove(key);
+    return { ok: true, delivered: true };
+  } catch (err) {
+    // Keep only tab IDs for the short TTL; no private answer data is persisted.
+    return { ok: false, error: "ThoughtFlow tab unavailable: " + (err?.message || "message failed") };
+  }
+}
+
+async function cleanupExpiredNoteJobs() {
+  const all = await chrome.storage.session.get(null);
+  const expired = Object.keys(all).filter((key) =>
+    key.startsWith(NOTE_JOB_PREFIX) && (!all[key]?.expiresAt || all[key].expiresAt < Date.now())
+  );
+  if (expired.length) await chrome.storage.session.remove(expired);
 }
 
 // ---- Heartbeat: proves extension ↔ API connectivity for the website --------
@@ -309,9 +375,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
 
   if (msg.type === "TF_ASK_CHATGPT") {
-    askChatGPTFromNote(sender, msg.question)
+    startChatGPTNoteJob(sender, msg.question, msg.requestId)
       .then(sendResponse)
-      .catch((err) => sendResponse({ ok: false, error: err?.message || "ChatGPT communication failed." }));
+      .catch((err) => sendResponse({ ok: false, error: err?.message || "ChatGPT request failed." }));
+    return true;
+  }
+
+  if (msg.type === "TF_CHATGPT_ASK_RESULT") {
+    forwardChatGPTNoteResult(sender, msg)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: err?.message || "Reply delivery failed." }));
     return true;
   }
 
@@ -428,6 +501,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "tf-retry") {
     flushQueue();
     heartbeat();
+    cleanupExpiredNoteJobs().catch(() => {});
   }
 });
 
