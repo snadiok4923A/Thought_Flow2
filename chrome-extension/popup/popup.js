@@ -60,7 +60,7 @@ async function refreshHealth() {
     $("connDot").className = "dot " + (connected ? "on" : "off");
     $("connText").textContent = connected
       ? `Connected (${h.storage || "?"})`
-      : "Offline";
+      : h && h.reason ? `Bridge blocked: ${h.reason}` : "Offline";
     return connected;
   } catch {
     $("connDot").className = "dot off";
@@ -194,6 +194,9 @@ async function runDiagnostics() {
     if (!d) throw new Error("no response");
     const parts = [];
     // Direct mode: ThoughtFlow tab open? (server API is legacy fallback)
+    if (d.bridge && !d.bridge.ok && d.bridge.reason !== "no ThoughtFlow tab") {
+      parts.push(`Bridge ✗ (${d.bridge.reason})`);
+    }
     if (d.panel) {
       parts.push("Tab ✓ (direct)");
     } else if (d.api && d.api.ok) {
