@@ -142,7 +142,14 @@
     // only deliberate Send/Enter actions, and permit just the LAST matching
     // Q+A to bypass that initial baseline.
     function submissionKey(value) {
-      return normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+      const normalized = normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+      if (!normalized) return "";
+      let hash = 2166136261;
+      for (let i = 0; i < normalized.length; i++) {
+        hash ^= normalized.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return normalized.length + ":" + (hash >>> 0).toString(36);
     }
 
     function markSubmittedQuestion(question) {
@@ -155,6 +162,13 @@
       state.submittedQuestions.push({ key, at: now });
       if (state.submittedQuestions.length > 8) state.submittedQuestions.shift();
       dbg("submission-observed", `q=${raw.length}c`);
+      // The page can reload while ChatGPT creates /c/<id>. Persist only the
+      // key in MV3 session storage, not the question text.
+      try {
+        chrome.runtime.sendMessage({ type: "TF_CHATGPT_SUBMISSION", key }, () => {
+          void chrome.runtime.lastError;
+        });
+      } catch { /* normal local marker still covers SPA navigation */ }
     }
 
     function isRecentlySubmitted(question, idx, lastIdx, now) {
@@ -449,6 +463,31 @@
     // user clicking Send in ChatGPT. Do not allow a normal reload to import
     // an entire existing conversation.
     globalThis.TFCapture.markSubmittedQuestion = markSubmittedQuestion;
+
+    // A full ChatGPT document replacement destroys local variables. Rehydrate
+    // the latest explicitly submitted question from the background worker.
+    // If it already got baseline-skipped while loading, unlock only its
+    // last matching Q+A and rescan. Never import unrelated old messages.
+    if (selectors.platform === "chatgpt") {
+      try {
+        chrome.runtime.sendMessage({ type: "TF_CHATGPT_SUBMISSION_GET" }, (result) => {
+          if (chrome.runtime.lastError || !result?.key ||
+              typeof result.at !== "number" ||
+              Date.now() - result.at > SUBMISSION_INTENT_TTL_MS) return;
+          state.submittedQuestions.push({ key: result.key, at: result.at });
+          const { pairs } = collectPairs();
+          const index = pairs.length - 1;
+          const latest = pairs[index];
+          if (latest && submissionKey(latest.question) === result.key) {
+            const fp = pairFingerprint(selectors.platform, state.convId, latest);
+            state.seen.delete(fp);
+            state.stats.delete(turnFingerprint(selectors.platform, state.convId, latest, index));
+            dbg("submission-unlocked", `q=${latest.question.length}c`);
+          }
+          schedule();
+        });
+      } catch { /* ignore if extension was reloaded */ }
+    }
 
     const observer = new MutationObserver(schedule);
     observer.observe(document.documentElement, {
