@@ -45,6 +45,7 @@ import {
   putCaptureSession,
   ackCaptureItem,
   buildCaptureNoteHtml,
+  escapeHtml,
   shortenQuestionTitle,
   normalizeCaptureDirection,
   toTreeDirection,
@@ -644,6 +645,10 @@ export default function ThoughtFlowApp() {
 
   // Active Node Creation Direction State: 'bottom' (vertical child) | 'right' (horizontal sibling)
   const [activeCreationDirection, setActiveCreationDirection] = useState('bottom');
+
+  // One deliberate Notes → existing ChatGPT tab → same Notes response at a time.
+  const [noteAsk, setNoteAsk] = useState({ nodeId: null, busy: false, message: '', version: 0 });
+  const noteAskPendingRef = useRef(null);
 
   // ---- AI Chat Auto Capture (Chrome extension → capture backend → this app) ----
   // Session shape mirrors the backend: { enabled, direction, rootNodeId, currentParentNodeId }
@@ -1817,6 +1822,87 @@ export default function ThoughtFlowApp() {
     setActiveNode(prev => (prev ? { ...prev, ...updates } : prev));
     setHasUnsavedChanges(true);
   }, [activeNode, treeData, collapsedNodeIds, pushSnapshotToUndo]);
+
+  // Ask the ChatGPT tab through the EXISTING extension. A deliberate button
+  // press sends the Notes question and the response returns to this same node.
+  // There is no separate AI page, API key, or new child node.
+  const handleAskChatGPTFromNotes = useCallback(async (rawQuestion) => {
+    const nodeId = activeNode?.id;
+    const question = String(rawQuestion || '').trim();
+    const version = noteAsk.version;
+    const show = (message, busy = false, nextVersion = version) =>
+      setNoteAsk({ nodeId, busy, message, version: nextVersion });
+
+    if (!nodeId || !question) {
+      show('Write a question in Notes first.');
+      return;
+    }
+    if (question.length > 12000) {
+      show('The question must be 12,000 characters or shorter.');
+      return;
+    }
+    if (noteAskPendingRef.current) {
+      show('Another question is being answered. Try again when it finishes.', true);
+      return;
+    }
+    if (!hasDirectBridge()) {
+      show('ThoughtFlow Extension is not connected. Reload the extension and this tab.');
+      return;
+    }
+
+    const requestId = `tf-notes-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    noteAskPendingRef.current = requestId;
+    show('Sending your question to the open ChatGPT tab...', true);
+    try {
+      const result = await new Promise((resolve) => {
+        let finished = false;
+        const finish = (response) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timeout);
+          window.removeEventListener('message', onResult);
+          resolve(response);
+        };
+        const onResult = (event) => {
+          if (event.source !== window || event.origin !== window.location.origin) return;
+          const data = event.data;
+          if (data?.source === 'thoughtflow-ask-chatgpt-result' && data.requestId === requestId) {
+            finish(data.result || { ok: false, error: 'No response from the extension.' });
+          }
+        };
+        const timeout = setTimeout(
+          () => finish({ ok: false, error: 'ChatGPT did not answer in time. Check the ChatGPT tab.' }),
+          115000
+        );
+        window.addEventListener('message', onResult);
+        window.postMessage({ source: 'thoughtflow-ask-chatgpt', requestId, question }, window.location.origin);
+      });
+      if (!result?.ok || typeof result.answer !== 'string' || !result.answer.trim()) {
+        throw new Error(result?.error || 'No answer returned by ChatGPT.');
+      }
+      // Use the newest tree, not the tree that existed when the question was
+      // sent. If the user navigated to another node, still update the original.
+      const tree = treeDataRef.current;
+      const node = findNodeById(tree, nodeId);
+      if (!node) throw new Error('The original node was removed while ChatGPT was answering.');
+      const oldNotes = node.notes || '';
+      const answer = escapeHtml(result.answer.trim()).replace(/\r\n?|\n/g, '<br>');
+      const nextNotes = oldNotes + (oldNotes ? '<p><br></p>' : '') + `<p>${answer}</p>`;
+
+      flushPendingTextEditHistory();
+      pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
+      const updatedTree = updateNodeInTree(tree, nodeId, { notes: nextNotes });
+      treeDataRef.current = updatedTree;
+      setTreeData(updatedTree);
+      setActiveNode((prev) => prev?.id === nodeId ? { ...prev, notes: nextNotes } : prev);
+      setHasUnsavedChanges(true);
+      show('ChatGPT answer added to this node.', false, version + 1);
+    } catch (error) {
+      show(error?.message || 'Could not get a ChatGPT answer.');
+    } finally {
+      noteAskPendingRef.current = null;
+    }
+  }, [activeNode, noteAsk.version, collapsedNodeIds, flushPendingTextEditHistory, pushSnapshotToUndo]);
 
   // Unsaved Changes and Mind Map Import/Export State
   const [showImportWarningModal, setShowImportWarningModal] = useState(false);
@@ -3987,6 +4073,10 @@ export default function ThoughtFlowApp() {
                     key={`notes-${activeNode.id}`} 
                     initialContent={activeNode.notes}
                     onChange={(content) => handleUpdateNode({ notes: content })}
+                    onAsk={handleAskChatGPTFromNotes}
+                    asking={noteAsk.busy && noteAsk.nodeId === activeNode.id}
+                    askStatus={noteAsk.nodeId === activeNode.id ? noteAsk.message : ''}
+                    forceSyncKey={noteAsk.nodeId === activeNode.id ? noteAsk.version : 0}
                   />
                 </div>
                 {!isReadMode && (
