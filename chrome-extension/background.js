@@ -477,7 +477,8 @@ async function forwardChatGPTNoteResult(sender, msg) {
 async function cleanupExpiredNoteJobs() {
   const all = await chrome.storage.session.get(null);
   const expired = Object.keys(all).filter((key) =>
-    key.startsWith(NOTE_JOB_PREFIX) && (!all[key]?.expiresAt || all[key].expiresAt < Date.now())
+    (key.startsWith(NOTE_JOB_PREFIX) || key.startsWith(SUBMISSION_PREFIX)) &&
+    (!all[key]?.expiresAt || all[key].expiresAt < Date.now())
   );
   if (expired.length) await chrome.storage.session.remove(expired);
 }
