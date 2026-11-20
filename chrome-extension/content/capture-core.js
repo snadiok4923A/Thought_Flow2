@@ -221,6 +221,14 @@
 
         pairs.forEach((p, idx) => {
           const fp = pairFingerprint(selectors.platform, state.convId, p);
+          // Questions initiated by ThoughtFlow's Notes button must update that
+          // existing node, NOT generate an extra child via normal auto-capture.
+          if (selectors.platform === "chatgpt" &&
+              globalThis.__tfOutboundQuestions?.has(normalize(p.question))) {
+            remember(fp);
+            state.stats.delete(fp);
+            return;
+          }
           if (state.seen.has(fp)) {
             state.stats.delete(fp);
             return;

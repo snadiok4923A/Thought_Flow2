@@ -65,4 +65,32 @@ window.addEventListener("message", (event) => {
   }
 });
 
+
+ // Notes -> ChatGPT -> SAME Notes editor (no additional mind-map node).
+ // Never send automatically; only forward the deliberate Ask button event.
+ window.addEventListener("message", (event) => {
+   if (event.source !== window || event.origin !== window.location.origin) return;
+   const data = event.data;
+   if (!data || data.source !== "thoughtflow-ask-chatgpt") return;
+   const requestId = data.requestId;
+   const question = typeof data.question === "string" ? data.question.trim() : "";
+   const respond = (result) => window.postMessage({
+     source: "thoughtflow-ask-chatgpt-result",
+     requestId,
+     result,
+   }, window.location.origin);
+   if (typeof requestId !== "string" || !requestId || !question || question.length > 12000) {
+     respond({ ok: false, error: "Enter a question of at most 12,000 characters." });
+     return;
+   }
+   try {
+     chrome.runtime.sendMessage({ type: "TF_ASK_CHATGPT", question }, (result) => {
+       const error = chrome.runtime.lastError?.message;
+       respond(error ? { ok: false, error } : (result || { ok: false, error: "No response from the extension." }));
+     });
+   } catch (err) {
+     respond({ ok: false, error: err?.message || "Extension is unavailable." });
+   }
+ });
+
 })();
