@@ -530,13 +530,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const all = await chrome.storage.session.get(null);
         const key = noteQuestionKey(payload.question);
         const looseKey = noteQuestionKey(payload.question, true);
-        const activeInTab = Object.entries(all).filter(([k, job]) =>
+        // Include recently completed jobs in dedupe lookup: a late normal
+        // Q+A scan must NOT become a child node after the Notes reply arrived.
+        const jobsInTab = Object.entries(all).filter(([k, job]) =>
           k.startsWith(NOTE_JOB_PREFIX) &&
           job?.chatgptTabId === sender.tab.id &&
-          !job.completed &&
           job.expiresAt > Date.now()
         );
-        const entry = activeInTab.find(([, job]) => job.questionKey === key ||
+        const activeInTab = jobsInTab.filter(([, job]) => !job.completed);
+        const entry = jobsInTab.find(([, job]) => job.questionKey === key ||
           job.looseQuestionKey === looseKey
         );
         if (!entry) {
