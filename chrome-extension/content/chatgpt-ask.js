@@ -22,6 +22,16 @@
     return value.length + ":" + (hash >>> 0).toString(36);
   }
 
+  // Let the existing Q+A auto-capture engine deliver Notes answers too.
+  // This marker does NOT resend the question; it only permits the new
+  // completed pair to be forwarded to its original Notes request.
+  function markNotesQuestion(key) {
+    const keys = globalThis.__tfOutboundQuestionKeys || new Set();
+    globalThis.__tfOutboundQuestionKeys = keys;
+    keys.add(key);
+    globalThis.TFCapture?.allowPendingNoteQuestion?.(key);
+  }
+
   function readMessages() {
     try {
       if (globalThis.TF_SELECTORS?.collectMessages) {
@@ -150,6 +160,7 @@
     globalThis.__tfOutboundQuestions = suppressed;
     fillComposer(editor, question);
     suppressed.add(normalize(question));
+    markNotesQuestion(key);
 
     let send = findSendButton();
     for (let i = 0; (!send || send.disabled) && i < 30; i++) {
@@ -218,6 +229,8 @@
       sendResponse({ ok: false, error: "Invalid recovery request." });
       return;
     }
+    // Recover previously baseline-skipped Q+A on a navigated/reloaded page.
+    markNotesQuestion(msg.questionKey);
     if (busy) {
       sendResponse({ ok: true, alreadyWatching: true });
       return;
