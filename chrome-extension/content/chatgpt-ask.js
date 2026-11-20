@@ -129,17 +129,44 @@
     throw new Error("ChatGPT response did not finish. Check the ChatGPT tab and retry only if it did not answer.");
   }
 
+  // A Chrome/Brave MV3 message port is NOT a reliable place to wait while
+  // ChatGPT generates a full response (potentially ~110 seconds). Acknowledge
+  // immediately, then send the completed answer in a fresh message.
+  async function reportResult(requestId, result) {
+    try {
+      await chrome.runtime.sendMessage({
+        type: "TF_CHATGPT_ASK_RESULT",
+        requestId,
+        result,
+      });
+    } catch (err) {
+      // Do not log the private answer. The originating Notes page has its
+      // own timeout/error state if this tab was closed or extension reloaded.
+      console.warn("[ThoughtFlow] Could not deliver ChatGPT reply:", err?.message || "extension unavailable");
+    }
+  }
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (!msg || msg.type !== "TF_CHATGPT_ASK") return;
+    if (!msg || msg.type !== "TF_CHATGPT_ASK_START") return;
+    if (typeof msg.requestId !== "string" || !/^tf-notes-[\\w-]{1,100}$/.test(msg.requestId)) {
+      sendResponse({ ok: false, error: "Invalid Notes request ID." });
+      return;
+    }
     if (busy) {
       sendResponse({ ok: false, error: "Another ThoughtFlow question is still being answered." });
       return;
     }
+
     busy = true;
-    ask(String(msg.question || "").trim())
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, error: error?.message || "ChatGPT request failed." }))
+    const question = String(msg.question || "").trim();
+    // Immediate reply: never hold the MV3 port open while a model responds.
+    sendResponse({ ok: true, started: true });
+    ask(question)
+      .then((result) => reportResult(msg.requestId, result))
+      .catch((error) => reportResult(msg.requestId, {
+        ok: false,
+        error: error?.message || "ChatGPT request failed.",
+      }))
       .finally(() => { busy = false; });
-    return true;
   });
 })();
