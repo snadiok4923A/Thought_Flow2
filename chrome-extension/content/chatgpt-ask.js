@@ -148,7 +148,7 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg || msg.type !== "TF_CHATGPT_ASK_START") return;
-    if (typeof msg.requestId !== "string" || !/^tf-notes-[\\w-]{1,100}$/.test(msg.requestId)) {
+    if (typeof msg.requestId !== "string" || !/^tf-notes-[A-Za-z0-9_-]{1,100}$/.test(msg.requestId)) {
       sendResponse({ ok: false, error: "Invalid Notes request ID." });
       return;
     }
