@@ -49,6 +49,13 @@ globalThis.TF_SELECTORS = (function () {
     document.querySelectorAll('[data-testid="user-message"]').forEach(function (el) {
       bucket.push({ el: el, role: "user" });
     });
+    // Newer ChatGPT layouts may expose user turns without user-message.
+    document.querySelectorAll('[data-testid="conversation-turn-user"]').forEach(function (turn) {
+      const body = turn.querySelector(
+        '[data-testid="user-message"], [data-message-author-role="user"], .whitespace-pre-wrap'
+      ) || turn;
+      bucket.push({ el: body, role: "user" });
+    });
     document
       .querySelectorAll(
         '[data-testid="conversation-turn-assistant"], [data-testid="conversation-turn-model"]'
@@ -127,9 +134,19 @@ globalThis.TF_SELECTORS = (function () {
     // All chat messages in document order; first strategy that yields
     // results wins, so only one representation is ever used per scan.
     collectMessages: function () {
+      // A partial author-role strategy (only user bubbles, for example)
+      // must not block fallback to a strategy that sees assistant replies.
       let out = collectByAuthorRole();
-      if (!out.length) out = collectByTestIds();
-      if (!out.length) out = collectByArticles();
+      const complete = (rows) => rows.some((m) => m.role === "user") &&
+        rows.some((m) => m.role === "assistant");
+      if (!complete(out)) {
+        const testIds = collectByTestIds();
+        if (complete(testIds) || testIds.length > out.length) out = testIds;
+      }
+      if (!complete(out)) {
+        const articles = collectByArticles();
+        if (complete(articles) || articles.length > out.length) out = articles;
+      }
       return out
         .filter(function (m) {
           return m && m.text;
