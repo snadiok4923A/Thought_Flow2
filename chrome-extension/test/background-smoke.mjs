@@ -68,6 +68,8 @@ const ctx = {
       onChanged: { addListener: () => {} },
     },
     alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
+    tabs: { onUpdated: { addListener: () => {} }, query: async () => [] },
+    scripting: { executeScript: async () => [] },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
     runtime: {
       lastError: null,
