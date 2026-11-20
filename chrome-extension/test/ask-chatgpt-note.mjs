@@ -7,8 +7,8 @@ import vm from "node:vm";
 
 const code = readFileSync(new URL("../content/chatgpt-ask.js", import.meta.url), "utf8");
 
-function harness({ draft = "", reply = "NEW ANSWER", noReply = false } = {}) {
-  let listener = null;
+function harness({ draft = "", reply = "NEW ANSWER", noReply = false, navigate = false } = {}) {
+  const listeners = [];
   let now = 10000;
   let sent = false;
   const sentResults = [];
@@ -18,6 +18,10 @@ function harness({ draft = "", reply = "NEW ANSWER", noReply = false } = {}) {
     disabled: false,
     click() {
       sent = true;
+      if (navigate) {
+        context.location.pathname = "/c/newly-created-chat";
+        messages.length = 0;
+      }
       messages.push({ role: "user", text: editor.innerText });
       if (!noReply) messages.push({ role: "assistant", text: reply });
     },
@@ -26,7 +30,7 @@ function harness({ draft = "", reply = "NEW ANSWER", noReply = false } = {}) {
     console,
     chrome: {
       runtime: {
-        onMessage: { addListener(fn) { listener = fn; } },
+        onMessage: { addListener(fn) { listeners.push(fn); } },
         sendMessage: async (msg) => {
           sentResults.push(msg);
           return { ok: true, delivered: true };
@@ -45,6 +49,7 @@ function harness({ draft = "", reply = "NEW ANSWER", noReply = false } = {}) {
         return true;
       },
     },
+    location: { pathname: "/" },
     Date: { now: () => now },
     setTimeout(fn, ms) { now += ms; queueMicrotask(fn); return 1; },
   };
@@ -54,14 +59,21 @@ function harness({ draft = "", reply = "NEW ANSWER", noReply = false } = {}) {
     isStreaming: () => false,
   };
   vm.runInNewContext(code, context, { filename: "chatgpt-ask.js" });
-  assert.equal(typeof listener, "function");
+  assert.equal(listeners.length, 2);
 
   return {
     start(question, requestId = "tf-notes-123-test") {
       return new Promise((resolve) => {
-        listener({ type: "TF_CHATGPT_ASK_START", requestId, question }, {}, resolve);
+        const handler = listeners[0];
+        handler({ type: "TF_CHATGPT_ASK_START", requestId, question }, {}, resolve);
       });
     },
+    resume(requestId, questionKey) {
+      return new Promise((resolve) => {
+        listeners[1]({ type: "TF_CHATGPT_ASK_RESUME", requestId, questionKey }, {}, resolve);
+      });
+    },
+    get messages() { return messages; },
     async waitForResult() {
       for (let i = 0; i < 400 && sentResults.length === 0; i++) {
         await new Promise((resolve) => setImmediate(resolve));
@@ -88,6 +100,14 @@ assert.equal(success.sent, true);
 assert.equal(success.editorText, "What is CSS?");
 assert.equal(success.suppressed.has("What is CSS?"), true);
 
+// ChatGPT's new-chat navigation must not discard the exact user's answer.
+const navigate = harness({ navigate: true });
+const navAck = await navigate.start("What is your name?", "tf-notes-123-nav");
+assert.equal(navAck.started, true);
+const navReply = await navigate.waitForResult();
+assert.equal(navReply.result.ok, true);
+assert.equal(navReply.result.answer, "NEW ANSWER");
+
 const draft = harness({ draft: "Important unsent message" });
 const draftAck = await draft.start("What is CSS?");
 assert.equal(draftAck.started, true);
@@ -102,11 +122,11 @@ const timeout = harness({ noReply: true });
 assert.equal((await timeout.start("What is RAM?")).started, true);
 const timeoutReply = await timeout.waitForResult();
 assert.equal(timeoutReply.result.ok, false);
-assert.match(timeoutReply.result.error, /did not finish/);
+assert.match(timeoutReply.result.error, /was not detected/);
 
 const badId = harness();
 const rejected = await badId.start("test", "bogus-request-id");
 assert.equal(rejected.ok, false);
 assert.match(rejected.error, /Invalid Notes request ID/);
 assert.equal(badId.sent, false);
-console.log("PASS: immediate ack, separate completion, new answer, draft safety, timeout, validation");
+console.log("PASS: immediate ack, navigation, separate completion, new answer, draft safety, timeout, validation");
