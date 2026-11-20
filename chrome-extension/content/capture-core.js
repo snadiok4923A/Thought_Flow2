@@ -11,6 +11,7 @@
 //
 // Diagnostics: every stage logs a short content-free event via TFDebug
 // (console + chrome.storage ring buffer → popup "Diagnostics").
+// Conversation text is NEVER logged — only lengths, counts and statuses.
 
 (function () {
   const SCAN_DEBOUNCE_MS = 350;
@@ -25,8 +26,7 @@
     }
   }
 
-  // Non-crypto fingerprint used only for client-side dedupe;
-  // the backend re-hashes with SHA-256.
+  // Non-crypto fingerprint used only for client-side dedupe.
   function hash(str) {
     let h1 = 5381;
     let h2 = 52711;
@@ -60,12 +60,12 @@
       settings: { captureEnabled: true, stabilityMs: DEFAULT_STABILITY_MS },
       seen: new Set(),
       stats: new Map(), // fp -> { lastSig, stableSince }
-      convId: null,
+      convId: null, // null = no conversation observed yet
       baselineDone: false,
+      lastPairCount: 0, // pairs visible at the end of the previous scan
       scanTimer: null,
       lastScanSig: "",
-      waitingLogged: new Set(),
-      inflight: new Set(), // sends awaiting a server response
+      inflight: new Set(), // sends awaiting a background response
       retryAfter: new Map(), // fp -> epoch ms before a dropped send may be retried
       wakeTimer: null, // precise wake-up when the next settle/retry deadline is known
     };
@@ -125,9 +125,9 @@
     }
 
     function send(pair, fp, convId) {
-      // Never mark a pair as "seen" before the server durably accepts (or
-      // queues, or definitively rejects) it — otherwise a transient drop
-      // (website panel OFF, network blip) would lose the answer forever.
+      // Never mark a pair as "seen" before the background/website accepted it —
+      // otherwise a transient drop (website panel OFF, website closed) would
+      // lose the answer forever.
       state.inflight.add(fp);
       const settle = (resp) => {
         state.inflight.delete(fp);
@@ -148,15 +148,14 @@
             remember(fp);
             dbg("send-dropped", `${resp.reason} (permanent — not retrying)`);
           } else {
-            // Transient (e.g. website panel OFF) — do NOT remember; retry after cooldown.
+            // Transient (website panel OFF / closed / busy) — do NOT remember.
             state.retryAfter.set(fp, Date.now() + retryCooldown());
             dbg("send-dropped", resp.reason || "unknown");
           }
           return;
         }
         remember(fp);
-        if (resp.queued) dbg("send-ok", "queued (API offline)");
-        else if (resp.duplicate) dbg("send-ok", "duplicate");
+        if (resp.duplicate) dbg("send-ok", "duplicate");
         else dbg("send-ok", "accepted");
       };
       const payload = {
@@ -166,10 +165,8 @@
         answer: pair.answer,
         messageIds: [pair.qid, pair.aid].filter(Boolean),
         fingerprint: fp,
-        // direction + parentNodeId are intentionally omitted: the server fills
-        // them from the website session (panel/popup), which owns that state.
       };
-      dbg("send", `q=${pair.question.length}c a=${pair.answer.length}c fp=${fp}`);
+      dbg("send", `q=${pair.question.length}c a=${pair.answer.length}c`);
       try {
         chrome.runtime.sendMessage({ type: "TF_TRY_SEND", payload }, settle);
       } catch {
@@ -179,28 +176,50 @@
       }
     }
 
+    // Whether a conversation that just appeared must be treated as history
+    // (skip everything already on screen) or as a live first exchange.
+    //
+    // ChatGPT creates the /c/<id> URL exactly when the first message is sent,
+    // so a conversation *switch* from a blank chat with a single pair is the
+    // user's live Q+A — it must be captured. Anything else (initial page load,
+    // opening a saved thread, a thread that already has several pairs) is
+    // history and is never retro-captured.
+    function baselineAfterSwitch(prevPairCount, pairs) {
+      const fromBlank = prevPairCount === 0;
+      return !(fromBlank && pairs.length <= 1);
+    }
+
     function tick() {
       try {
         if (!selectors.isSupportedPage()) return;
 
-        // Conversation switch (or first load) → baseline the existing thread so
-        // old conversations are never retro-captured.
         const convId = selectors.getConversationId() || "";
-        if (state.convId === null) {
-          state.convId = convId;
-          state.baselineDone = false;
-        } else if (convId !== state.convId) {
-          dbg("conversation-switch", (state.convId || "(new)") + " → " + (convId || "(new)"));
-          state.convId = convId;
-          state.baselineDone = false;
-          state.stats.clear();
-        }
-
         const { pairs, msgCount } = collectPairs();
         const streaming = selectors.isStreaming();
         const enabled = state.settings.captureEnabled;
         const stabilityMs = state.settings.stabilityMs || DEFAULT_STABILITY_MS;
         const now = Date.now();
+
+        // ---- conversation tracking + baseline ----
+        if (state.convId === null) {
+          // First scan after load: whatever is already on screen is history.
+          state.convId = convId;
+          state.baselineDone = false;
+          dbg("conversation", `first observation (${convId || "(new)"})`);
+        } else if (convId !== state.convId) {
+          const prevConv = state.convId;
+          const prevPairCount = state.lastPairCount;
+          const baselineNow = baselineAfterSwitch(prevPairCount, pairs);
+          state.convId = convId;
+          state.stats.clear();
+          state.baselineDone = !baselineNow;
+          dbg(
+            "conversation-switch",
+            `${prevConv || "(new)"} → ${convId || "(new)"} pairs=${pairs.length} ${
+              baselineNow ? "baseline" : "live-first-pair"
+            }`
+          );
+        }
 
         // Throttled scan heartbeat — only when the observable state changes.
         const strategy = selectors.probeStrategy ? selectors.probeStrategy() : "-";
@@ -210,7 +229,18 @@
           dbg("scan", `msgs=${msgCount} pairs=${pairs.length} streaming=${streaming} capture=${enabled} strategy=${strategy}`);
         }
 
-        if (!pairs.length) return;
+        state.lastPairCount = pairs.length;
+
+        if (!pairs.length) {
+          // An empty conversation completes the baseline immediately. Without
+          // this the first Q+A of a new chat would appear in the same tick as
+          // the first non-empty scan and be swallowed as "history".
+          if (!state.baselineDone) {
+            state.baselineDone = true;
+            dbg("baseline", "empty conversation — first Q+A will be captured");
+          }
+          return;
+        }
 
         const lastIdx = pairs.length - 1;
 

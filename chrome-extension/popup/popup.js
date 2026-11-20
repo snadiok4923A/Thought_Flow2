@@ -58,9 +58,11 @@ async function refreshHealth() {
     const h = await chrome.runtime.sendMessage({ type: "TF_HEALTH" });
     const connected = !!(h && h.connected);
     $("connDot").className = "dot " + (connected ? "on" : "off");
+    // Direct mode = a ThoughtFlow tab whose bridge answered. The reason is
+    // shown so "Offline" is never ambiguous (no tab vs unreadable tab).
     $("connText").textContent = connected
-      ? `Connected (${h.storage || "?"})`
-      : "Offline";
+      ? `Connected (${h.storage || "direct"})`
+      : `Offline${h && h.status ? " — " + h.status : ""}`;
     return connected;
   } catch {
     $("connDot").className = "dot off";
@@ -80,11 +82,21 @@ async function refreshStats() {
 }
 
 async function loadSession() {
+  // Direct mode first: the open ThoughtFlow panel owns the session.
+  try {
+    const panel = await chrome.runtime.sendMessage({ type: "TF_GET_PANEL_STATE" });
+    if (panel && panel.open) {
+      if (panel.direction) $("direction").value = panel.direction;
+      return;
+    }
+  } catch {
+    /* no ThoughtFlow tab — fall through to the legacy server session */
+  }
   try {
     session = await chrome.runtime.sendMessage({ type: "TF_GET_SESSION" });
     if (session && session.direction) $("direction").value = session.direction;
   } catch {
-    /* server offline */
+    /* server offline (expected in direct mode) */
   }
 }
 
@@ -229,25 +241,35 @@ $("quickAddBtn").addEventListener("click", async () => {
     status.textContent = "Both the question and the answer are required.";
     return;
   }
-  status.textContent = "Storing…";
+  status.textContent = "Adding…";
   try {
-    const res = await TFApi.postCapture({
-      source: "manual",
-      conversationId: "",
-      question,
-      answer,
-    });
-    status.textContent =
-      res && res.duplicate
+    // Same direct pipeline as auto-capture: extension → open ThoughtFlow tab.
+    // No capture server involved.
+    const res = await chrome.runtime.sendMessage({ type: "TF_QUICK_ADD", question, answer });
+    if (res && res.ok) {
+      status.textContent = res.duplicate
         ? "Already captured (duplicate)."
-        : "Stored — it becomes a node when ThoughtFlow is open with the panel ON.";
-    if (!(res && res.duplicate)) {
+        : "Added as a new node under your AI Capture start node.";
       $("qaQuestion").value = "";
       $("qaAnswer").value = "";
+      await refreshStats();
+      return;
     }
-    await refreshStats();
+    const reason = (res && res.reason) || "unknown";
+    status.textContent =
+      reason === "website-off" || reason === "bridge-missing" || reason === "bridge-timeout"
+        ? "Could not reach ThoughtFlow — open the ThoughtFlow tab, reload it, and turn its AI Capture panel ON."
+        : reason === "no-start-node"
+          ? "ThoughtFlow needs an AI Capture start node: select a node and press the locate button in the panel."
+          : reason === "panel-off"
+            ? "ThoughtFlow's AI Capture panel is OFF — turn it ON and try again."
+          : reason === "busy"
+            ? "ThoughtFlow was busy creating a node — try again in a second."
+            : reason === "extension-off"
+              ? "Extension capture is OFF (switch at the top of this popup)."
+              : `ThoughtFlow did not accept it (${reason}).`;
   } catch (err) {
-    status.textContent = "Could not reach the capture API (" + ((err && err.message) || "offline") + ").";
+    status.textContent = "Extension background unavailable (" + ((err && err.message) || "error") + ").";
   }
 });
 

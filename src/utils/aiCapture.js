@@ -136,6 +136,40 @@ export function toTreeDirection(dir) {
   return normalizeCaptureDirection(dir) === "right" ? "right" : "down";
 }
 
+// ---- Direct-capture dedupe keys --------------------------------------------
+
+// 64-bit-ish non-crypto hash (two independent 32-bit lanes) of the exact
+// question + answer text. No truncation, so two different long conversations
+// that share a prefix can never collide into one ledger entry.
+export function captureContentHash(question, answer) {
+  const input =
+    String(question ?? "").replace(/\s+/g, " ").trim() +
+    "\u0000" +
+    String(answer ?? "").replace(/\s+/g, " ").trim();
+  let h1 = 5381;
+  let h2 = 52711;
+  for (let i = 0; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    h1 = ((h1 << 5) + h1) ^ c;
+    h2 = ((h2 << 5) + h2) ^ c;
+  }
+  return (h1 >>> 0).toString(36) + "-" + (h2 >>> 0).toString(36);
+}
+
+// Stable ledger key for a direct capture delivery.
+//
+// The extension sends a `fingerprint` that already covers platform,
+// conversation id, message ids and the full Q+A text, so a RETRY of the same
+// delivery maps to the same key while the same words asked in a different
+// conversation (or answered differently) map to a different one.
+export function captureDedupeKey(payload) {
+  const p = payload || {};
+  const source = String(p.source || "manual").toLowerCase();
+  const conv = String(p.conversationId || "");
+  const fp = String(p.fingerprint || "") || captureContentHash(p.question, p.answer);
+  return `direct:${source}:${conv}:${fp}`;
+}
+
 // ---- Applied-item ledger ---------------------------------------------------
 // Maps server capture id → created node id, persisted in localStorage so a
 // lost ack (or a page reload before the ack landed) can never duplicate a node.

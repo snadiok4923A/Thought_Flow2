@@ -102,22 +102,56 @@ async function findThoughtFlowTab() {
   }
 }
 
+// A content script keeps the message channel open until the page acks. If the
+// page is not listening (React not mounted, stale bridge) that channel could
+// stay open for a long time, so every tab message is bounded here as well.
+const TAB_MESSAGE_TIMEOUT_MS = 12000;
+
+async function sendToTab(tabId, message, timeoutMs = TAB_MESSAGE_TIMEOUT_MS) {
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ __tfTimeout: true }), timeoutMs);
+  });
+  try {
+    return await Promise.race([chrome.tabs.sendMessage(tabId, message), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function queryPanel(tab) {
+  if (!tab || typeof tab.id !== "number") return null;
+  try {
+    const requestId = `panel-${Date.now()}`;
+    const result = await sendToTab(tab.id, { type: "TF_GET_PANEL_STATE", requestId }, 4000);
+    if (!result || result.__tfTimeout || !result.open) return null;
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 async function deliverDirect(payload) {
   const tab = await findThoughtFlowTab();
   if (!tab || typeof tab.id !== "number") return { delivered: false, reason: "website-off" };
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let result;
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, {
+    result = await sendToTab(tab.id, {
       type: "TF_CAPTURE_DIRECT",
       requestId,
       payload,
     });
-    if (!result || !result.received) return { delivered: false, reason: "website-off" };
-    return { delivered: true, result };
   } catch (err) {
     dbg("direct-error", (err && err.message) || "no bridge");
-    return { delivered: false, reason: "website-off" };
+    return { delivered: false, reason: "bridge-missing" };
   }
+  if (!result || result.__tfTimeout) {
+    dbg("direct-error", "timeout waiting for the website ack");
+    return { delivered: false, reason: "bridge-timeout" };
+  }
+  if (!result.received) return { delivered: false, reason: result.reason || "app-offline" };
+  return { delivered: true, result };
 }
 
 async function handleCapture(payload) {
@@ -131,14 +165,20 @@ async function handleCapture(payload) {
   if (!direct.delivered) {
     // No ThoughtFlow tab (or bridge not ready) — drop; the content script
     // retries after its cooldown, so opening the website promptly still works.
-    dbg("reject", "no ThoughtFlow tab open (direct)");
-    return { drop: true, reason: "website-off" };
+    dbg("reject", `not delivered (${direct.reason})`);
+    return { drop: true, reason: direct.reason || "website-off" };
   }
   const r = direct.result || {};
   if (r.created) {
     dbg("direct-ok", "node created");
     await bumpCounter();
     return { accepted: true, duplicate: !!r.duplicate };
+  }
+  // A retried delivery whose node already exists is a SUCCESS, not a drop —
+  // otherwise the content script would retry a duplicate forever.
+  if (r.duplicate) {
+    dbg("direct-ok", "duplicate (node already exists)");
+    return { accepted: true, duplicate: true };
   }
   // Tab received it but the website dropped it (panel OFF / no start node /
   // no board open). Transient — content script retries after cooldown.
@@ -160,15 +200,7 @@ async function diagnose() {
   const settings = await TFApi.getSettings();
   // Direct mode: is a ThoughtFlow tab open, and what does its panel say?
   const tab = await findThoughtFlowTab();
-  let panel = null;
-  if (tab) {
-    try {
-      const requestId = `panel-${Date.now()}`;
-      panel = await chrome.tabs.sendMessage(tab.id, { type: "TF_GET_PANEL_STATE", requestId });
-    } catch {
-      panel = null;
-    }
-  }
+  const panel = await queryPanel(tab);
   // Legacy server check (kept for backward compat; not on the direct path).
   let api = null;
   try {
@@ -217,18 +249,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_HEALTH") {
-    // Direct mode first: an open ThoughtFlow tab with the bridge counts
-    // as connected (no server needed). Fall back to server health for
-    // backward compat with hosted/localhost deployments.
+    // Direct mode first: an open ThoughtFlow tab whose bridge actually answers
+    // counts as connected (no server needed). A tab that exists but does not
+    // answer is NOT connected — that is exactly the "reload the tab" case.
+    // Fall back to server health for backward compat.
     (async () => {
       const tab = await findThoughtFlowTab();
-      if (tab) return sendResponse({ connected: true, storage: "direct", ok: true, status: "ok" });
+      if (tab) {
+        const panel = await queryPanel(tab);
+        if (panel) {
+          return sendResponse({ connected: true, storage: "direct", ok: true, status: "ok", panel });
+        }
+        return sendResponse({
+          connected: false,
+          status: "bridge-unreachable",
+          reason: "ThoughtFlow tab open but its capture bridge did not answer — reload that tab",
+        });
+      }
       try {
         const h = await TFApi.health();
         const real = !!h && (h.ok === true || h.status === "ok");
-        return sendResponse(real ? { connected: true, ...h } : { connected: false });
+        return sendResponse(real ? { connected: true, ...h } : { connected: false, status: "no-thoughtflow-tab" });
       } catch {
-        return sendResponse({ connected: false });
+        return sendResponse({ connected: false, status: "no-thoughtflow-tab" });
       }
     })();
     return true;
@@ -238,16 +281,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const tab = await findThoughtFlowTab();
       if (!tab) return sendResponse({ open: false });
-      try {
-        const requestId = `panel-${Date.now()}`;
-        const result = await chrome.tabs.sendMessage(tab.id, {
-          type: "TF_GET_PANEL_STATE",
-          requestId,
-        });
-        return sendResponse(result || { open: false });
-      } catch {
-        return sendResponse({ open: false });
+      const panel = await queryPanel(tab);
+      return sendResponse(panel || { open: false });
+    })();
+    return true;
+  }
+
+  // Quick add (popup) — SAME direct pipeline as auto-capture: extension →
+  // ThoughtFlow tab → node. No capture server required.
+  if (msg.type === "TF_QUICK_ADD") {
+    (async () => {
+      const question = String(msg.question || "").trim();
+      const answer = String(msg.answer || "").trim();
+      if (!question || !answer) return sendResponse({ ok: false, reason: "invalid" });
+      const settings = await TFApi.getSettings();
+      if (!settings.captureEnabled) return sendResponse({ ok: false, reason: "extension-off" });
+      const direct = await deliverDirect({
+        source: "manual",
+        conversationId: "",
+        question,
+        answer,
+        messageIds: [],
+        fingerprint: "",
+      });
+      if (!direct.delivered) {
+        dbg("quick-add", `not delivered (${direct.reason})`);
+        return sendResponse({ ok: false, reason: direct.reason });
       }
+      const r = direct.result || {};
+      if (!r.created) {
+        dbg("quick-add", `dropped (${r.reason || "website-off"})`);
+        return sendResponse({ ok: false, reason: r.reason || "website-off" });
+      }
+      await bumpCounter();
+      dbg("quick-add", "node created");
+      return sendResponse({ ok: true, duplicate: !!r.duplicate, nodeId: r.nodeId || null });
     })();
     return true;
   }
@@ -277,9 +345,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_STATS") {
-    TFApi.getStats()
-      .then((s) => sendResponse(s))
-      .catch(() => sendResponse({ captured: null }));
+    // Direct mode has no server: fall back to the local badge counter.
+    (async () => {
+      try {
+        const s = await TFApi.getStats();
+        if (s && typeof s.captured === "number") return sendResponse({ ...s, storage: s.storage || "server" });
+      } catch {
+        /* no capture server — expected in direct mode */
+      }
+      const { capturedCount = 0 } = await chrome.storage.local.get("capturedCount");
+      return sendResponse({ captured: capturedCount, storage: "local" });
+    })();
     return true;
   }
 

@@ -23,7 +23,7 @@ backward compat but is no longer on the capture path.
 |---|---|---|
 | Dedicated selectors | ChatGPT, Gemini | Multi-strategy DOM readers in `content/selectors-*.js` |
 | Generic engine | Arena (arena.ai / lmarena.ai), Grok, Claude, DeepSeek, Perplexity, Copilot, Poe, You.com, DuckDuckGo AI, Meta AI, Mistral, Qwen, Kimi, Felo, GLM (z.ai), MiniMax | Heuristic alternating-thread reader in `content/selectors-generic.js` — poor man's fallback, ships diagnostics (`strategy=roles|turns|alternating|none`) |
-| Quick add (always works) | **Any** AI site | Extension popup → "Quick add" → paste question + answer → stored as a pending pair, becomes a node exactly like auto-capture |
+| Quick add (always works) | **Any** AI site | Extension popup → "Quick add" → paste question + answer → sent through the SAME direct bridge → one node, no server |
 
 The generic engine reads the **alternating** structure of chat UIs
 (user asks → assistant answers). If a site changes its markup, `strategy=none`
@@ -81,6 +81,46 @@ Remaining caveats (honest list):
   pairs wait as "pending" on the server — nothing is lost, but nothing
   appears either.
 
+## Root causes fixed in v1.2.0 (direct mode)
+
+1. **First Q+A of a new chat was skipped.** The baseline (`no retro-capture`)
+   only completed on a scan that already contained a pair, so the very first
+   exchange of a new conversation was marked as "history" — especially when
+   ChatGPT flips the URL to `/c/<id>` at the same moment the answer starts.
+   The baseline now completes on an EMPTY conversation, and a switch away from
+   a blank chat with a single pair is treated as the live first exchange.
+   Loading a saved thread (or any conversation with several pairs) is still
+   never captured retroactively.
+2. **"Connected: No" while the extension was working.** The page tested
+   `window.__thoughtflow_bridge`, but content scripts run in an isolated world,
+   so that flag is never visible to React. Presence is now announced with
+   window messages (`thoughtflow-bridge-ready`, refreshed every 5 s, plus a
+   `thoughtflow-bridge-ping` from the page) and the legacy server poller can no
+   longer downgrade the status while the bridge is alive. A failed session PUT
+   (no server) no longer claims "disconnected" either.
+3. **Duplicates were decided AFTER node creation, on a truncated key.** The
+   direct path now checks a persisted ledger key
+   (`platform + conversationId + full-text fingerprint`) BEFORE creating
+   anything, so retries can never create a second node and two long
+   conversations that share a prefix can never be treated as duplicates. A
+   duplicate ack is reported as success, not as a drop to retry.
+4. **Quick add required the capture server.** It now uses the same direct
+   pipeline as auto-capture (`TF_QUICK_ADD` → tab bridge → node) and reports a
+   precise reason when the site cannot accept it.
+5. **Silent message drops.** The bridge now acks every forwarded request with a
+   timeout (8 s) and the background bounds every `tabs.sendMessage` (12 s), so
+   a stale tab can no longer leave a message channel hanging forever. Drop
+   reasons are distinct (`panel-off`, `no-start-node`, `no-board`, `busy`,
+   `bridge-missing`, `bridge-timeout`) and only transient ones are retried.
+6. **Nodes lost when two deliveries landed together.** The tree ref is now kept
+   authoritative immediately after a capture, so a second delivery arriving
+   before React re-renders builds on the tree that already has the first node.
+
+Automated coverage: `npm test` (node:test) — capture baseline/streaming/retry/
+dedupe in `tests/capture-core.test.mjs`, bridge forwarding/timeout/presence in
+`tests/bridge.test.mjs`, dedupe-key + exact-text formatting in
+`tests/aiCapture.test.mjs`.
+
 ## Local testing (full walkthrough)
 
 ```bash
@@ -130,8 +170,10 @@ after the text is stable for `stabilityMs` (default 2000 ms).
    ChatGPT selector strategy (`author-role`, `testid`, `article`, `none`) is
    reported on every scan; `none` means ChatGPT changed its markup and only
    `content/selectors-chatgpt.js` needs updating.
-4. The website panel's **Connected** reflects the extension's heartbeat
-   (< 90 s), not merely that the website is open.
+4. The website panel's **Connected** means the extension bridge in that tab
+   answered a handshake (direct mode). A failed legacy server poll never turns
+   it off; if the bridge is silent the popup reports `bridge-unreachable` —
+   reload the ThoughtFlow tab.
 5. Local end-to-end harness (no real ChatGPT needed):
    `node chrome-extension/test/serve.js` then open
    `http://localhost:5099/test/mock-chatgpt.html` and press **Run Q+A test**.
@@ -214,7 +256,7 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 - **Capture** — extension-level switch (website panel is the second switch; both must be ON)
 - **Platform** — ChatGPT / Gemini detected from the active tab
 - **Direction** — writes to the shared session; applies to future nodes
-- **Connection** — API health + storage mode
+- **Connection** — direct mode: reloaded ThoughtFlow tab + answering bridge (`Connected (direct)`); otherwise the reason is shown
 - **Captured** — number of applied conversations
 - **Settings** — API base URL, capture token, streaming stability ms
 
