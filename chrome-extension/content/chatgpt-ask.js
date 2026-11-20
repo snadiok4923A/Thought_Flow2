@@ -9,6 +9,19 @@
   const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  // A privacy-preserving fingerprint to link the reply with the exact
+  // question, including after ChatGPT changes from / to /c/<conversation>.
+  // No raw question needs to be persisted in extension storage.
+  function questionKey(text) {
+    const value = normalize(text);
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return value.length + ":" + (hash >>> 0).toString(36);
+  }
+
   function readMessages() {
     try {
       if (globalThis.TF_SELECTORS?.collectMessages) {
@@ -74,14 +87,58 @@
     }
   }
 
+  // Look for the *specific* user question, then read the assistant text
+  // following that turn. Counting all assistant messages fails when ChatGPT
+  // navigates from a new-chat page to a conversation URL after submission.
+  async function waitForAnswer(key, minMatches, startingPath) {
+    const deadline = Date.now() + 110000;
+    let last = "";
+    let stableSince = 0;
+    while (Date.now() < deadline) {
+      await delay(450);
+      const messages = readMessages();
+      const userMatches = [];
+      messages.forEach((message, index) => {
+        if (message.role === "user" && questionKey(message.text) === key) {
+          userMatches.push(index);
+        }
+      });
+
+      // An SPA route change to /c/... restarts the visible transcript.
+      const required = location.pathname !== startingPath ? 1 : minMatches;
+      if (userMatches.length < required) continue;
+      const questionIndex = userMatches[userMatches.length - 1];
+      let answer = "";
+      for (let i = questionIndex + 1; i < messages.length; i++) {
+        if (messages[i].role === "user") break;
+        if (messages[i].role === "assistant" && messages[i].text?.trim()) {
+          answer = messages[i].text.trim();
+        }
+      }
+      if (!answer) continue;
+      if (answer !== last) {
+        last = answer;
+        stableSince = Date.now();
+        continue;
+      }
+      if (!streaming() && Date.now() - stableSince >= 2500) {
+        return { ok: true, answer };
+      }
+    }
+    throw new Error("ChatGPT answer was not detected. Check the ChatGPT tab before retrying.");
+  }
+
   async function ask(question) {
     if (!question || question.length > 12000) {
       throw new Error("Write a question of at most 12,000 characters in Notes.");
     }
     if (streaming()) throw new Error("ChatGPT is generating another response. Try again after it finishes.");
 
-    const originalMessages = readMessages();
-    const initialAssistants = originalMessages.filter((m) => m.role === "assistant").length;
+    const key = questionKey(question);
+    const before = readMessages().filter((msg) =>
+      msg.role === "user" && questionKey(msg.text) === key
+    ).length;
+    const startingPath = location.pathname;
     let editor = composer();
     for (let i = 0; !editor && i < 30; i++) {
       await delay(200);
@@ -89,8 +146,6 @@
     }
     if (!editor) throw new Error("ChatGPT composer was not found. Open ChatGPT and sign in.");
 
-    // Suppress normal AI auto-capture of this one question: the answer must be
-    // appended to its ORIGINAL node, not duplicated as a new child node.
     const suppressed = globalThis.__tfOutboundQuestions || new Set();
     globalThis.__tfOutboundQuestions = suppressed;
     fillComposer(editor, question);
@@ -102,31 +157,11 @@
       send = findSendButton();
     }
     if (!send || send.disabled) {
-      throw new Error("ChatGPT Send button was not available. The question may be in the composer; check the ChatGPT tab.");
+      throw new Error("ChatGPT Send button was not available. Check the ChatGPT tab.");
     }
     send.click();
 
-    // Wait for a NEW assistant message, then until its visible text settles.
-    // Never return an earlier answer already present in the chat.
-    const deadline = Date.now() + 110000;
-    let last = "";
-    let stableSince = 0;
-    while (Date.now() < deadline) {
-      await delay(450);
-      const messages = readMessages();
-      const answers = messages.filter((m) => m.role === "assistant" && String(m.text || "").trim());
-      const newAnswer = answers.length > initialAssistants ? answers[answers.length - 1]?.text?.trim() : "";
-      if (!newAnswer) continue;
-      if (newAnswer !== last) {
-        last = newAnswer;
-        stableSince = Date.now();
-        continue;
-      }
-      if (!streaming() && Date.now() - stableSince >= 2500) {
-        return { ok: true, answer: newAnswer };
-      }
-    }
-    throw new Error("ChatGPT response did not finish. Check the ChatGPT tab and retry only if it did not answer.");
+    return waitForAnswer(key, before + 1, startingPath);
   }
 
   // A Chrome/Brave MV3 message port is NOT a reliable place to wait while
@@ -166,6 +201,36 @@
       .catch((error) => reportResult(msg.requestId, {
         ok: false,
         error: error?.message || "ChatGPT request failed.",
+      }))
+      .finally(() => { busy = false; });
+  });
+
+  // ChatGPT may replace its entire document after creating a new chat. In
+  // that case the original script disappears mid-request. The background
+  // reinjects this helper on the navigated tab and asks it to watch for the
+  // question that was already sent (NEVER send the question a second time).
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || msg.type !== "TF_CHATGPT_ASK_RESUME") return;
+    if (typeof msg.requestId !== "string" ||
+        !/^tf-notes-[A-Za-z0-9_-]{1,100}$/.test(msg.requestId) ||
+        typeof msg.questionKey !== "string" ||
+        !/^[0-9]+:[a-z0-9]+$/.test(msg.questionKey)) {
+      sendResponse({ ok: false, error: "Invalid recovery request." });
+      return;
+    }
+    if (busy) {
+      sendResponse({ ok: true, alreadyWatching: true });
+      return;
+    }
+    busy = true;
+    sendResponse({ ok: true, watching: true });
+    // The navigated page contains the submitted user question. Match it
+    // before accepting any assistant reply, preventing stale-answer leaks.
+    waitForAnswer(msg.questionKey, 1, location.pathname)
+      .then((result) => reportResult(msg.requestId, result))
+      .catch((error) => reportResult(msg.requestId, {
+        ok: false,
+        error: error?.message || "Could not recover ChatGPT's answer.",
       }))
       .finally(() => { busy = false; });
   });
