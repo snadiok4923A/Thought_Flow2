@@ -135,7 +135,7 @@
     // only deliberate Send/Enter actions, and permit just the LAST matching
     // Q+A to bypass that initial baseline.
     function submissionKey(value) {
-      return normalize(value).toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, "");
+      return normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     }
 
     function markSubmittedQuestion(question) {
