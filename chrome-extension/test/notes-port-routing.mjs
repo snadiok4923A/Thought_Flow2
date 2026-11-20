@@ -9,6 +9,7 @@ const session = {};
 const deliveries = [];
 const injections = [];
 let onMessage;
+const tabUpdateHandlers = [];
 
 const sessionStorage = {
   async get(key) {
@@ -32,7 +33,7 @@ const context = {
     },
     alarms: { create() {}, onAlarm: { addListener() {} } },
     tabs: {
-      onUpdated: { addListener() {} },
+      onUpdated: { addListener(fn) { tabUpdateHandlers.push(fn); } },
       async query() {
         return [{ id: 10, windowId: 4, lastAccessed: 12,
           url: "https://chatgpt.com/c/known-conversation" }];
@@ -85,7 +86,24 @@ assert.equal(deliveries[0].message.type, "TF_CHATGPT_ASK_START");
 assert.equal(deliveries[0].message.requestId, requestId);
 assert.equal(deliveries[0].tabId, 10);
 assert.equal(Object.keys(session).length, 1);
-assert.ok(!JSON.stringify(session).includes("What is AI?")); // only routing IDs
+const stored = Object.values(session)[0];
+assert.equal(typeof stored.questionKey, "string");
+assert.ok(!JSON.stringify(session).includes("What is AI?")); // no raw text
+
+// A newly created ChatGPT conversation may navigate to /c/..., dropping
+// the original content-script watcher. Browser tab update must reinject it.
+for (const notify of tabUpdateHandlers) {
+  notify(10, { status: "complete", url: "https://chatgpt.com/c/new" }, {
+    id: 10, url: "https://chatgpt.com/c/new",
+  });
+}
+await new Promise((resolve) => setImmediate(resolve));
+assert.ok(deliveries.some((d) => d.message.type === "TF_CHATGPT_ASK_RESUME"));
+const resume = deliveries.find((d) => d.message.type === "TF_CHATGPT_ASK_RESUME");
+assert.equal(resume.tabId, 10);
+assert.equal(resume.message.requestId, requestId);
+assert.equal(resume.message.questionKey, stored.questionKey);
+assert.ok(!JSON.stringify(resume.message).includes("What is AI?"));
 
 // Result from another ChatGPT tab must not be allowed to change Notes.
 const spoof = await send({
@@ -93,7 +111,7 @@ const spoof = await send({
   result: { ok: true, answer: "Wrong account" },
 }, { url: "https://chatgpt.com/", tab: { id: 999 } });
 assert.equal(spoof.ok, false);
-assert.equal(deliveries.length, 1);
+assert.equal(deliveries.filter((d) => d.message.type === "TF_NOTES_AI_RESULT").length, 0);
 
 // The correct tab sends a fresh short response after generation finishes.
 const completion = await send({
@@ -102,10 +120,11 @@ const completion = await send({
 }, chatSender);
 assert.equal(completion.ok, true);
 assert.equal(completion.delivered, true);
-assert.equal(deliveries[1].tabId, 20);
-assert.equal(deliveries[1].message.type, "TF_NOTES_AI_RESULT");
-assert.equal(deliveries[1].message.result.answer, "AI is machine intelligence.");
-assert.equal(Object.keys(session).length, 0);
+const noteDelivery = deliveries.find((d) => d.message.type === "TF_NOTES_AI_RESULT");
+assert.equal(noteDelivery.tabId, 20);
+assert.equal(noteDelivery.message.result.answer, "AI is machine intelligence.");
+assert.equal(Object.keys(session).length, 1);
+assert.equal(Object.values(session)[0].completed, true); // short dedupe window
 
 // Reject a request coming from any website other than ThoughtFlow.
 const blocked = await send({
@@ -123,7 +142,8 @@ const errCompletion = await send({
   result: { ok: false, error: "Composer unavailable" },
 }, chatSender);
 assert.equal(errCompletion.ok, true);
-assert.equal(deliveries.at(-1).message.result.ok, false);
-assert.match(deliveries.at(-1).message.result.error, /Composer unavailable/);
+const lastNoteDelivery = deliveries.filter((d) => d.message.type === "TF_NOTES_AI_RESULT").at(-1);
+assert.equal(lastNoteDelivery.message.result.ok, false);
+assert.match(lastNoteDelivery.message.result.error, /Composer unavailable/);
 
-console.log("PASS: immediate start, routing persistence, tab validation, separate result and error forwarding");
+console.log("PASS: immediate start, navigation recovery, fingerprint, tab validation and result forwarding");
