@@ -211,6 +211,41 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### First ChatGPT question after a new conversation URL change (v1.1.7)
+
+**Bug reproduction:** a user sends the first question from `chatgpt.com/`,
+ChatGPT navigates to `/c/<id>`, and the capture engine's first scan of
+the new URL already sees `msgs=2 pairs=1 streaming=false`.
+The old `baselineDone = false` reset treated the pair as historical,
+logged `baseline-skip`, and silently created no node. The same path
+could prevent a question sent with the existing Notes **Ask ChatGPT** button
+from returning its answer.
+
+**Fix:** the ChatGPT capture engine observes actual Send-button clicks and
+Enter submissions before the composer clears. The existing Notes Ask helper
+also explicitly marks its submitted question. Only the **last Q+A matching
+that recently submitted question** can bypass the first URL baseline scan;
+older conversations and unrelated Q+A remain excluded. The intent expires
+after two minutes and is never saved to extension storage. Gemini and other
+AI providers are unchanged. The content-free `submission-observed q=Nc`
+diagnostic indicates that capture saw the Send action.
+
+Run the regression test from the project root:
+
+```bash
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+```
+
+**Browser verification:** merge and pull, reload the unpacked extension and
+confirm version **1.1.7**, refresh ChatGPT and ThoughtFlow, open a new ChatGPT
+chat, and send a new question with Send or Enter. The first completed Q+A
+should create a node after it settles. For Notes Ask, the same Q+A should
+instead update the original Note. If the question reaches ChatGPT but the
+answer still does not return, collect Diagnostics events from the test
+(`submission-observed`, `conversation-switch`, `baseline-skip`,
+`answer-seen`, `send`, `note-answer-captured`) rather than retrying
+the question repeatedly.
+
 ### Diagnostic clues for a partial answer or unmatched Notes request (v1.1.6)
 
 If Diagnostics says `answer-seen q=... a=9c`, then two seconds later
