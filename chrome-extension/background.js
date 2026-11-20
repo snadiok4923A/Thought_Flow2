@@ -280,6 +280,9 @@ async function startChatGPTNoteJob(sender, question, requestId) {
     const current = (await chrome.storage.session.get(key))[key];
     if (current) {
       await chrome.storage.session.set({ [key]: { ...current, started: true } });
+      // In case ChatGPT navigated before the START acknowledgement reached us,
+      // also attempt recovery here. A live watcher rejects redundant RESUME.
+      resumeChatGPTNoteJobs(target.id).catch(() => {});
     }
     return { ok: true, started: true };
   } catch (err) {
@@ -330,6 +333,15 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
     resumeChatGPTNoteJobs(tabId).catch(() => {});
   }
 });
+
+async function resumeAllPendingNoteJobs() {
+  const all = await chrome.storage.session.get(null);
+  const ids = new Set(Object.entries(all)
+    .filter(([key, job]) => key.startsWith(NOTE_JOB_PREFIX) && job?.started &&
+      !job.completed && job.expiresAt > Date.now())
+    .map(([, job]) => job.chatgptTabId));
+  await Promise.all([...ids].map((tabId) => resumeChatGPTNoteJobs(tabId)));
+}
 
 // This is a NEW short-lived message from the ChatGPT content script. A paused
 // or restarted service worker can pick up the routing data from session storage.
@@ -583,6 +595,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     flushQueue();
     heartbeat();
     cleanupExpiredNoteJobs().catch(() => {});
+    // Fallback when a ChatGPT SPA route change did not emit a tabs.onUpdated
+    // event, or when the browser suspended the previous document.
+    resumeAllPendingNoteJobs().catch(() => {});
   }
 });
 
