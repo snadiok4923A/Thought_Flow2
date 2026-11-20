@@ -8,7 +8,7 @@
   <body>
     <header>
       <div class="brand">
-        <span class="logo">⬡</span>
+        <span class="logo" id="developerLogo" title="Shift-click for developer tools">⬡</span>
         <div>
           <h1>ThoughtFlow AI Capture</h1>
           <p class="sub">Exact Q+A → one mind-map node</p>
@@ -31,10 +31,10 @@
       </section>
 
       <details id="quickAdd">
-        <summary>Quick add (works on ANY AI site)</summary>
+        <summary>Quick add</summary>
         <p class="diag-hint">
-          Chat somewhere the extension can't read? Paste the question and answer — it is stored
-          as a pending Q+A pair and becomes one mind-map node exactly like auto-capture.
+          Auto-capture not available? Paste a question and answer to add a node
+          directly to your open ThoughtFlow mind map.
         </p>
         <label for="qaQuestion">Question</label>
         <textarea id="qaQuestion" rows="2" spellcheck="false" placeholder="What is a PC?"></textarea>
@@ -62,7 +62,14 @@
         <span class="value mono" id="capturedCount">–</span>
       </section>
 
-      <details id="diagnostics">
+      <!-- Hidden in the normal popup; accessible via Shift-click on the logo
+           or Alt+Shift+D for developer troubleshooting. -->
+      <section id="developerTools" hidden aria-label="Developer tools">
+        <div class="developer-header">
+          <span>Developer tools</span>
+          <button type="button" id="closeDeveloperTools" aria-label="Close developer tools">Close</button>
+        </div>
+        <details id="diagnostics">
         <summary>Diagnostics</summary>
         <div class="diag-pipeline" id="diagPipeline">—</div>
         <button id="runDiag" class="secondary">Run connection test</button>
@@ -83,7 +90,8 @@
         <label for="stabilityMs">Streaming stability (ms)</label>
         <input id="stabilityMs" type="number" min="500" max="15000" step="250" />
         <button id="saveAdvanced" class="secondary">Save</button>
-      </details>
+        </details>
+      </section>
     </main>
 
     <footer>
