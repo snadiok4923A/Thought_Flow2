@@ -93,9 +93,8 @@
     // appended to its ORIGINAL node, not duplicated as a new child node.
     const suppressed = globalThis.__tfOutboundQuestions || new Set();
     globalThis.__tfOutboundQuestions = suppressed;
-    suppressed.add(normalize(question));
-
     fillComposer(editor, question);
+    suppressed.add(normalize(question));
 
     let send = findSendButton();
     for (let i = 0; (!send || send.disabled) && i < 30; i++) {
