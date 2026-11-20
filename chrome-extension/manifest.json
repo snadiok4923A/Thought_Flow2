@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Captures complete Q+A pairs from ChatGPT, Gemini, Arena and other AI chat sites exactly as visible and sends them directly to your open ThoughtFlow tab to become mind-map nodes (no server needed).",
   "permissions": [
     "storage",
