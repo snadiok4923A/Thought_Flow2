@@ -345,6 +345,10 @@ async function resumeAllPendingNoteJobs() {
 
 // This is a NEW short-lived message from the ChatGPT content script. A paused
 // or restarted service worker can pick up the routing data from session storage.
+// Avoid duplicate Notes updates if the DOM watcher and Q+A collector finish
+// at the same time. A service-worker restart is covered by stored.completed.
+const noteAnswerDelivering = new Set();
+
 async function forwardChatGPTNoteResult(sender, msg) {
   const requestId = msg?.requestId;
   if (!validNoteRequestId(requestId) || !isChatGPTUrl(sender?.url || sender?.tab?.url)) {
@@ -355,11 +359,15 @@ async function forwardChatGPTNoteResult(sender, msg) {
   if (!stored || stored.chatgptTabId !== sender?.tab?.id || stored.expiresAt < Date.now()) {
     return { ok: false, error: "The Notes request is no longer active." };
   }
+  if (stored.completed || noteAnswerDelivering.has(key)) {
+    return { ok: true, duplicate: true };
+  }
 
   const result = msg.result?.ok && typeof msg.result.answer === "string" && msg.result.answer.trim()
     ? { ok: true, answer: msg.result.answer }
     : { ok: false, error: String(msg.result?.error || "ChatGPT did not return an answer.") };
 
+  noteAnswerDelivering.add(key);
   try {
     const response = await chrome.tabs.sendMessage(stored.thoughtflowTabId, {
       type: "TF_NOTES_AI_RESULT",
@@ -376,6 +384,8 @@ async function forwardChatGPTNoteResult(sender, msg) {
   } catch (err) {
     // Keep only tab IDs for the short TTL; no private answer data is persisted.
     return { ok: false, error: "ThoughtFlow tab unavailable: " + (err?.message || "message failed") };
+  } finally {
+    noteAnswerDelivering.delete(key);
   }
 }
 
@@ -463,23 +473,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_TRY_SEND") {
-    // The Notes Ask button already updates its originating node. Suppress the
-    // normal ChatGPT -> child-node auto-capture for that exact question,
-    // including if a ChatGPT navigation reset the content-script memory.
+    // The EXISTING auto-capture engine already knows how to extract a
+    // completed ChatGPT question+answer. Reuse that working path to return
+    // answers for deliberate Notes questions, rather than silently dropping
+    // the pair and depending on a fragile, separate DOM watcher.
     (async () => {
       const payload = msg.payload || {};
       if (isChatGPTUrl(sender?.url || sender?.tab?.url) &&
           typeof sender?.tab?.id === "number" &&
-          typeof payload.question === "string") {
+          typeof payload.question === "string" &&
+          typeof payload.answer === "string" && payload.answer.trim()) {
         const all = await chrome.storage.session.get(null);
         const key = noteQuestionKey(payload.question);
-        const ownsQuestion = Object.entries(all).some(([k, job]) =>
+        const entry = Object.entries(all).find(([k, job]) =>
           k.startsWith(NOTE_JOB_PREFIX) &&
           job?.chatgptTabId === sender.tab.id &&
           job.questionKey === key &&
           job.expiresAt > Date.now()
         );
-        if (ownsQuestion) return { accepted: true, duplicate: true };
+        if (entry) {
+          const requestId = entry[0].slice(NOTE_JOB_PREFIX.length);
+          const delivery = await forwardChatGPTNoteResult(sender, {
+            requestId,
+            result: { ok: true, answer: payload.answer },
+          });
+          if (delivery.ok) {
+            dbg("note-answer-captured", delivery.duplicate ? "already delivered" : "delivered");
+            // Mark the Q+A seen but do NOT make a child node.
+            return { accepted: true, duplicate: true };
+          }
+          dbg("note-answer-retry", delivery.error || "delivery unavailable");
+          // Preserve this Q+A for retry; never route it to a child node.
+          return { drop: true, reason: "note-answer-delivery-failed" };
+        }
       }
       return handleCapture(payload);
     })()
