@@ -45,6 +45,7 @@ import {
   putCaptureSession,
   ackCaptureItem,
   buildCaptureNoteHtml,
+  planDirectCaptureUpsert,
   escapeHtml,
   shortenQuestionTitle,
   normalizeCaptureDirection,
@@ -1582,11 +1583,9 @@ export default function ThoughtFlowApp() {
           const nodeId = typeof recorded === 'string' ? recorded : recorded.nodeId;
           const existing = nodeId ? findNodeById(tree, nodeId) : null;
           if (existing) {
-            // Update only notes that are still identical to our previous
-            // generated answer. Never overwrite a note the user has edited.
-            if (recorded && typeof recorded === 'object' &&
-                recorded.noteHtml === existing.notes &&
-                nextNoteHtml !== existing.notes) {
+            // Update only notes that still exactly match our previous
+            // generated answer, preserving any user-entered changes.
+            if (planDirectCaptureUpsert(recorded, existing, nextNoteHtml) === 'update') {
               flushPendingTextEditHistory();
               pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
               const nextTree = updateNodeInTree(tree, nodeId, { notes: nextNoteHtml });
