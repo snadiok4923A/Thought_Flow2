@@ -198,6 +198,18 @@ async function handleCapture(payload) {
 const NOTE_JOB_PREFIX = "tf-note-job:";
 const NOTE_JOB_TTL_MS = 180000; // React has its own shorter visible timeout.
 const noteJobKey = (requestId) => NOTE_JOB_PREFIX + requestId;
+
+// Match the exact pending question without persisting its raw text.
+function noteQuestionKey(question) {
+  const value = String(question || "").replace(/\s+/g, " ").trim();
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return value.length + ":" + (hash >>> 0).toString(36);
+}
+
 const validNoteRequestId = (id) => typeof id === "string" &&
   /^tf-notes-[A-Za-z0-9_-]{1,100}$/.test(id);
 
@@ -251,6 +263,8 @@ async function startChatGPTNoteJob(sender, question, requestId) {
       [key]: {
         thoughtflowTabId: sourceTabId,
         chatgptTabId: target.id,
+        questionKey: noteQuestionKey(text),
+        started: false,
         expiresAt: Date.now() + NOTE_JOB_TTL_MS,
       },
     });
@@ -263,6 +277,10 @@ async function startChatGPTNoteJob(sender, question, requestId) {
       await chrome.storage.session.remove(key);
       return { ok: false, error: started?.error || "ChatGPT could not start answering." };
     }
+    const current = (await chrome.storage.session.get(key))[key];
+    if (current) {
+      await chrome.storage.session.set({ [key]: { ...current, started: true } });
+    }
     return { ok: true, started: true };
   } catch (err) {
     await chrome.storage.session.remove(key).catch(() => {});
@@ -272,6 +290,46 @@ async function startChatGPTNoteJob(sender, question, requestId) {
     };
   }
 }
+
+// A new conversation can replace ChatGPT's document right after Send is
+// clicked. Restart the answer watcher on the new page; do not resubmit the
+// question. The current request ID + question fingerprint are enough.
+async function resumeChatGPTNoteJobs(tabId) {
+  const all = await chrome.storage.session.get(null);
+  const jobs = Object.entries(all).filter(([key, job]) =>
+    key.startsWith(NOTE_JOB_PREFIX) &&
+    job?.started === true &&
+    !job.completed &&
+    job.chatgptTabId === tabId &&
+    job.expiresAt > Date.now() &&
+    typeof job.questionKey === "string"
+  );
+  if (!jobs.length) return;
+  for (const [key, job] of jobs) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content/chatgpt-ask.js"],
+      });
+      const requestId = key.slice(NOTE_JOB_PREFIX.length);
+      await chrome.tabs.sendMessage(tabId, {
+        type: "TF_CHATGPT_ASK_RESUME",
+        requestId,
+        questionKey: job.questionKey,
+      });
+    } catch (err) {
+      dbg("ask-resume-wait", err?.message || "ChatGPT tab not ready");
+    }
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  // URL changes occur for SPA navigation; "complete" handles full reloads.
+  if ((info.url || info.status === "complete") &&
+      isChatGPTUrl(tab?.url || info.url)) {
+    resumeChatGPTNoteJobs(tabId).catch(() => {});
+  }
+});
 
 // This is a NEW short-lived message from the ChatGPT content script. A paused
 // or restarted service worker can pick up the routing data from session storage.
@@ -297,7 +355,11 @@ async function forwardChatGPTNoteResult(sender, msg) {
       result,
     });
     if (!response?.received) throw new Error("ThoughtFlow did not acknowledge the reply.");
-    await chrome.storage.session.remove(key);
+    // Keep a short-lived fingerprint so automatic capture does not create a
+    // duplicate child node if it scans just after the Notes reply is applied.
+    await chrome.storage.session.set({
+      [key]: { ...stored, completed: true, expiresAt: Date.now() + 120000 },
+    });
     return { ok: true, delivered: true };
   } catch (err) {
     // Keep only tab IDs for the short TTL; no private answer data is persisted.
@@ -389,7 +451,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_TRY_SEND") {
-    handleCapture(msg.payload || {})
+    // The Notes Ask button already updates its originating node. Suppress the
+    // normal ChatGPT -> child-node auto-capture for that exact question,
+    // including if a ChatGPT navigation reset the content-script memory.
+    (async () => {
+      const payload = msg.payload || {};
+      if (isChatGPTUrl(sender?.url || sender?.tab?.url) &&
+          typeof sender?.tab?.id === "number" &&
+          typeof payload.question === "string") {
+        const all = await chrome.storage.session.get(null);
+        const key = noteQuestionKey(payload.question);
+        const ownsQuestion = Object.entries(all).some(([k, job]) =>
+          k.startsWith(NOTE_JOB_PREFIX) &&
+          job?.chatgptTabId === sender.tab.id &&
+          job.questionKey === key &&
+          job.expiresAt > Date.now()
+        );
+        if (ownsQuestion) return { accepted: true, duplicate: true };
+      }
+      return handleCapture(payload);
+    })()
       .then(sendResponse)
       .catch((e) => {
         dbg("send-fatal", (e && e.message) || "error");
