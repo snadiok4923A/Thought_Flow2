@@ -175,6 +175,10 @@
     if (!send || send.disabled) {
       throw new Error("ChatGPT Send button was not available. Check the ChatGPT tab.");
     }
+    // A new ChatGPT conversation can change its URL immediately after
+    // sending. Keep this explicit submission from being baselined as history.
+    // Capture-core will still require a complete, stable Q+A before delivery.
+    globalThis.TFCapture?.markSubmittedQuestion?.(question);
     send.click();
 
     return waitForAnswer(key, before + 1, startingPath);

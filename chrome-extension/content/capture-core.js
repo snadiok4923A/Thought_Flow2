@@ -16,6 +16,7 @@
   const SCAN_DEBOUNCE_MS = 350;
   const DEFAULT_STABILITY_MS = 2000;
   const SEEN_CAP = 600;
+  const SUBMISSION_INTENT_TTL_MS = 120000; // for a new ChatGPT conversation URL
 
   function dbg(event, detail) {
     try {
@@ -82,6 +83,7 @@
       stats: new Map(), // fp -> { lastSig, stableSince }
       convId: null,
       baselineDone: false,
+      submittedQuestions: [], // local intent only; never persisted or auto-imported
       scanTimer: null,
       lastScanSig: "",
       waitingLogged: new Set(),
@@ -125,6 +127,65 @@
         dbg("settings", "capture re-enabled → baseline");
       }
     });
+
+    // When ChatGPT sends the FIRST message in a new conversation, it often
+    // changes from / to /c/<id> after the user hits Send. The URL switch
+    // resets baselineDone; if the first scan sees a completed answer, it is
+    // incorrectly treated as old history and silently skipped. Remember
+    // only deliberate Send/Enter actions, and permit just the LAST matching
+    // Q+A to bypass that initial baseline.
+    function submissionKey(value) {
+      return normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    }
+
+    function markSubmittedQuestion(question) {
+      const raw = normalize(question);
+      const key = submissionKey(raw);
+      if (!key || selectors.platform !== "chatgpt") return;
+      const now = Date.now();
+      state.submittedQuestions = state.submittedQuestions
+        .filter((item) => now - item.at < SUBMISSION_INTENT_TTL_MS);
+      state.submittedQuestions.push({ key, at: now });
+      if (state.submittedQuestions.length > 8) state.submittedQuestions.shift();
+      dbg("submission-observed", `q=${raw.length}c`);
+    }
+
+    function isRecentlySubmitted(question, idx, lastIdx, now) {
+      if (selectors.platform !== "chatgpt" || idx !== lastIdx) return false;
+      const key = submissionKey(question);
+      return !!key && state.submittedQuestions.some((item) =>
+        item.key === key && now - item.at >= 0 &&
+        now - item.at < SUBMISSION_INTENT_TTL_MS
+      );
+    }
+
+    // User sends a message manually from ChatGPT using the Send button or
+    // Enter. Capture BEFORE ChatGPT clears the composer. This also handles
+    // Notes-originated requests, which explicitly mark intent before click.
+    function readChatGPTComposer() {
+      const el = document.querySelector?.(
+        '#prompt-textarea, [data-testid="composer-input"], .ProseMirror[contenteditable="true"]'
+      );
+      return el ? (el.value || el.innerText || el.textContent || "") : "";
+    }
+
+    if (selectors.platform === "chatgpt" && document.addEventListener) {
+      document.addEventListener("click", (event) => {
+        const send = event.target?.closest?.(
+          'button[data-testid="send-button"], button[data-testid="composer-send-button"], ' +
+          'button[aria-label="Send prompt"], button[aria-label="Send message"], button[aria-label="Send"]'
+        );
+        if (send) markSubmittedQuestion(readChatGPTComposer());
+      }, true);
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.shiftKey || event.isComposing ||
+            event.altKey || event.ctrlKey || event.metaKey) return;
+        const inComposer = event.target?.closest?.(
+          '#prompt-textarea, [data-testid="composer-input"], .ProseMirror[contenteditable="true"]'
+        );
+        if (inComposer) markSubmittedQuestion(readChatGPTComposer());
+      }, true);
+    }
 
     // ---- pairing: user → assistant, in document order ----
     function collectPairs() {
@@ -254,6 +315,7 @@
           // BACK to the existing Notes editor instead of making a child node.
           const pendingNote = selectors.platform === "chatgpt" &&
             isPendingNotesQuestion(p.question);
+          const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
           if (state.seen.has(fp)) {
             state.stats.delete(fp);
             return;
@@ -292,7 +354,7 @@
           const stuckStreaming = streaming && stableFor >= stabilityMs * 3;
           const settled = settledByTime && (!streaming || stuckStreaming);
 
-          if (!state.baselineDone && !pendingNote) {
+          if (!state.baselineDone && !pendingNote && !submittedNow) {
             // Baseline: every finished pair already on screen is skipped so
             // old conversations NEVER retro-capture. Only the last pair of a
             // conversation that is ACTIVELY STREAMING survives (an in-flight
@@ -370,6 +432,11 @@
       }
       schedule();
     };
+
+    // A click from the Notes Ask helper uses the same protection as a
+    // user clicking Send in ChatGPT. Do not allow a normal reload to import
+    // an entire existing conversation.
+    globalThis.TFCapture.markSubmittedQuestion = markSubmittedQuestion;
 
     const observer = new MutationObserver(schedule);
     observer.observe(document.documentElement, {
