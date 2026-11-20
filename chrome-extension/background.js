@@ -89,6 +89,48 @@ async function flushQueue() {
   await setQueue(remaining);
 }
 
+// Automatically recover the content-script bridge when Brave/Chrome did not
+// inject it after an extension reload, SPA navigation, or browser restart.
+// This requires the MV3 "scripting" permission and existing host permissions.
+function isThoughtFlowUrl(raw) {
+  try {
+    const url = new URL(raw || "");
+    const local = url.protocol === "http:" &&
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+    const hosted = url.protocol === "https:" &&
+      url.hostname === "snadiok4923a.github.io";
+    return (local || hosted) &&
+      (url.pathname === "/Thought_Flow2" || url.pathname.startsWith("/Thought_Flow2/"));
+  } catch {
+    return false;
+  }
+}
+
+async function ensureThoughtFlowBridge(tab) {
+  if (!tab || typeof tab.id !== "number") return { ok: false, reason: "no-tab" };
+  if (!isThoughtFlowUrl(tab.url)) return { ok: false, reason: "wrong-tab" };
+  try {
+    // Safe if the manifest already injected it: bridge has an idempotent guard.
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content/thoughtflow-bridge.js"],
+    });
+    return { ok: true };
+  } catch (err) {
+    const reason = (err && err.message) || "script injection blocked";
+    dbg("bridge-injection-failed", reason);
+    return { ok: false, reason };
+  }
+}
+
+// Direct captures recover the bridge automatically, and popup diagnostics
+// expose a useful failure reason instead of silently returning "Offline".
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status === "complete" && isThoughtFlowUrl(tab && tab.url)) {
+    ensureThoughtFlowBridge(tab).catch(() => {});
+  }
+});
+
 // ---- Direct delivery to the open ThoughtFlow tab ---------------------------
 // No server, no queue. Finds the ThoughtFlow tab and asks its bridge
 // content script to hand the pair to the React app, which creates the
@@ -97,14 +139,7 @@ async function findThoughtFlowTab() {
   try {
     const tabs = await chrome.tabs.query({ url: THOUGHTFLOW_URLS });
     // Chrome URL match patterns cannot filter ports. Exclude unrelated local apps.
-    return (tabs || []).find((tab) => {
-      try {
-        const url = new URL(tab.url || "");
-        return url.pathname === "/Thought_Flow2" || url.pathname.startsWith("/Thought_Flow2/");
-      } catch {
-        return false;
-      }
-    }) || null;
+    return (tabs || []).find((tab) => isThoughtFlowUrl(tab.url)) || null;
   } catch {
     return null;
   }
@@ -113,6 +148,8 @@ async function findThoughtFlowTab() {
 async function deliverDirect(payload) {
   const tab = await findThoughtFlowTab();
   if (!tab || typeof tab.id !== "number") return { delivered: false, reason: "website-off" };
+  const bridge = await ensureThoughtFlowBridge(tab);
+  if (!bridge.ok) return { delivered: false, reason: "bridge-unavailable", detail: bridge.reason };
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     const result = await chrome.tabs.sendMessage(tab.id, {
@@ -168,6 +205,7 @@ async function diagnose() {
   const settings = await TFApi.getSettings();
   // Direct mode: is a ThoughtFlow tab open, and what does its panel say?
   const tab = await findThoughtFlowTab();
+  const bridge = tab ? await ensureThoughtFlowBridge(tab) : { ok: false, reason: "no ThoughtFlow tab" };
   let panel = null;
   if (tab) {
     try {
@@ -207,7 +245,7 @@ async function diagnose() {
             : "OK";
   const { retryQueue = [] } = await chrome.storage.local.get("retryQueue");
   const { tfDebugLog = [] } = await chrome.storage.local.get("tfDebugLog");
-  return { settings, api, session, panel, gate, queue: retryQueue.length, events: tfDebugLog.slice(-15).reverse() };
+  return { settings, api, session, panel, bridge, gate, queue: retryQueue.length, events: tfDebugLog.slice(-15).reverse() };
 }
 
 // ---- Messaging ---------------------------------------------------------------
@@ -230,7 +268,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // backward compat with hosted/localhost deployments.
     (async () => {
       const tab = await findThoughtFlowTab();
-      if (tab) return sendResponse({ connected: true, storage: "direct", ok: true, status: "ok" });
+      if (tab) {
+        const bridge = await ensureThoughtFlowBridge(tab);
+        return sendResponse(bridge.ok
+          ? { connected: true, storage: "direct", ok: true, status: "ok" }
+          : { connected: false, reason: bridge.reason });
+      }
       try {
         const h = await TFApi.health();
         const real = !!h && (h.ok === true || h.status === "ok");
