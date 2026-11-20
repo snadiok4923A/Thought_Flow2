@@ -52,6 +52,25 @@ import {
   saveAppliedCaptureMap
 } from './utils/aiCapture';
 
+// Content scripts have an isolated JS global; the DOM attribute is shared.
+const hasDirectBridge = () =>
+  typeof document !== "undefined" && document.documentElement?.getAttribute("data-thoughtflow-bridge") === "ready";
+
+// Never depend on the legacy server when the direct extension bridge exists.
+const syncCaptureSession = (patch) => hasDirectBridge() ? Promise.resolve(null) : putCaptureSession(patch);
+
+// The fallback key is short and hashes the FULL answer, not just its first 80 characters.
+const directCaptureKey = (payload, question, answer) => {
+  if (typeof payload.fingerprint === "string" && payload.fingerprint) return `direct-${payload.fingerprint}`;
+  const fullText = `${payload.source || 'manual'}\u0000${question}\u0000${answer}`;
+  let hash = 2166136261;
+  for (let i = 0; i < fullText.length; i++) {
+    hash ^= fullText.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `direct-${(hash >>> 0).toString(36)}-${question.length}-${answer.length}`;
+};
+
 // Configure PDF.js Worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -1489,6 +1508,11 @@ export default function ThoughtFlowApp() {
       const data = event.data;
       if (!data || typeof data.source !== 'string') return;
 
+      if (data.source === 'thoughtflow-bridge-ready') {
+        updateAiCapture({ connected: true });
+        return;
+      }
+
       if (data.source === 'thoughtflow-panel-query') {
         const s = aiCaptureStateRef.current;
         ack(data.requestId, {
@@ -1539,6 +1563,13 @@ export default function ThoughtFlowApp() {
       }
       aiApplyingRef.current = true;
       try {
+        // Deduplicate BEFORE adding a node or recording an undo snapshot.
+        const appliedMap = appliedCaptureMapRef.current;
+        const fp = directCaptureKey(payload, question, answer);
+        if (appliedMap[fp]) {
+          ack(requestId, { received: true, created: false, duplicate: true });
+          return;
+        }
         const direction = normalizeCaptureDirection(state.direction);
         flushPendingTextEditHistory();
         pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
@@ -1559,12 +1590,6 @@ export default function ThoughtFlowApp() {
         });
         // Local dedupe ledger (same as server path) — a retried direct
         // delivery of the same pair never creates a second node.
-        const appliedMap = appliedCaptureMapRef.current;
-        const fp = `direct-${payload.source || 'manual'}-${question.slice(0, 80)}-${answer.slice(0, 80)}`;
-        if (appliedMap[fp]) {
-          ack(requestId, { received: true, created: false, duplicate: true });
-          return;
-        }
         appliedMap[fp] = newNode.id;
         saveAppliedCaptureMap(appliedMap);
         setTreeData(updatedTree);
@@ -1582,7 +1607,7 @@ export default function ThoughtFlowApp() {
     window.addEventListener('message', onMessage);
     // Bridge present = extension installed + tab open. Show Connected Yes
     // immediately; the server poller below must not overwrite it to No.
-    if (typeof window !== 'undefined' && window.__thoughtflow_bridge) {
+    if (hasDirectBridge()) {
       updateAiCapture({ connected: true });
     }
     return () => window.removeEventListener('message', onMessage);
@@ -1595,17 +1620,22 @@ export default function ThoughtFlowApp() {
 
     const poll = async () => {
       const state = aiCaptureStateRef.current;
+      // Direct mode must not adopt stale API state or report false 'Connected: No'.
+      if (hasDirectBridge()) {
+        if (!cancelled && !state.connected) updateAiCapture({ connected: true });
+        return;
+      }
       let sync;
       try {
         sync = await fetchCaptureSync();
       } catch {
         // Direct mode (bridge present, no server) still counts as connected.
-        const direct = typeof window !== 'undefined' && !!window.__thoughtflow_bridge;
+        const direct = hasDirectBridge();
         if (!cancelled && !direct && state.connected) updateAiCapture({ connected: false });
         if (!cancelled && direct && !state.connected) updateAiCapture({ connected: true });
         return;
       }
-      if (cancelled || !sync) return;
+      if (cancelled || hasDirectBridge() || !sync) return;
 
       const { session, items, captured, extensionLastSeen } = sync;
       // "Connected" = backend reachable AND the extension is actually
@@ -1702,7 +1732,7 @@ export default function ThoughtFlowApp() {
       });
       aiParentWriteTsRef.current = Date.now();
       try {
-        await putCaptureSession({
+        await syncCaptureSession({
           enabled: true,
           direction: aiCaptureStateRef.current.direction,
           rootNodeId: activeNode.id,
@@ -1715,7 +1745,7 @@ export default function ThoughtFlowApp() {
       // OFF: stop capturing immediately; created nodes remain untouched.
       updateAiCapture({ enabled: false });
       try {
-        await putCaptureSession({ enabled: false });
+        await syncCaptureSession({ enabled: false });
       } catch {
         updateAiCapture({ connected: false });
       }
@@ -1726,7 +1756,7 @@ export default function ThoughtFlowApp() {
     // Only FUTURE nodes use the new direction — nothing is rearranged.
     updateAiCapture({ direction });
     try {
-      await putCaptureSession({ direction });
+      await syncCaptureSession({ direction });
     } catch {
       updateAiCapture({ connected: false });
     }
@@ -1745,7 +1775,7 @@ export default function ThoughtFlowApp() {
     });
     aiParentWriteTsRef.current = Date.now();
     if (aiCaptureStateRef.current.enabled) {
-      putCaptureSession({ rootNodeId: activeNode.id, currentParentNodeId: activeNode.id }).catch(() => {});
+      syncCaptureSession({ rootNodeId: activeNode.id, currentParentNodeId: activeNode.id }).catch(() => {});
     }
   }, [activeNode, updateAiCapture]);
 
@@ -1910,7 +1940,7 @@ export default function ThoughtFlowApp() {
     if (capState.enabled && capState.currentParentId !== node.id) {
       aiParentWriteTsRef.current = Date.now();
       updateAiCapture({ currentParentId: node.id });
-      putCaptureSession({ currentParentNodeId: node.id }).catch(() => {});
+      syncCaptureSession({ currentParentNodeId: node.id }).catch(() => {});
     }
 
     if (isSidebarOpen) {
