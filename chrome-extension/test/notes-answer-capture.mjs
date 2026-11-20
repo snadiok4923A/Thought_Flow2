@@ -27,7 +27,7 @@ function pair() {
   ];
 }
 
-function contentHarness(initialMessages = []) {
+function contentHarness(initialMessages = [], captureEnabled = true) {
   let clock = 1000;
   let nextTimerId = 1;
   let mutation;
@@ -80,7 +80,7 @@ function contentHarness(initialMessages = []) {
         },
         sync: {
           get(_defaults, callback) {
-            callback({ captureEnabled: true, stabilityMs: 2000 });
+            callback({ captureEnabled, stabilityMs: 2000 });
           },
         },
         onChanged: { addListener() {} },
@@ -128,6 +128,29 @@ navigated.context.TFCapture.allowPendingNoteQuestion(questionKey(QUESTION));
 navigated.advance(5000);
 assert.equal(navigated.forwarded.length, 1);
 assert.equal(navigated.forwarded[0].payload.answer, ANSWER);
+
+// A prior, identical question must NOT be mistaken for the new answer
+// when the user sends the same prompt again to the same conversation.
+const repeated = contentHarness([
+  ...pair(),
+  { role: "user", text: QUESTION, id: "user-message-2" },
+  { role: "assistant", text: "NEW answer only", id: "assistant-message-2" },
+]);
+repeated.advance(1000);
+assert.equal(repeated.forwarded.length, 0);
+repeated.context.TFCapture.allowPendingNoteQuestion(questionKey(QUESTION));
+repeated.advance(5000);
+assert.equal(repeated.forwarded.length, 1);
+assert.equal(repeated.forwarded[0].payload.answer, "NEW answer only");
+
+// Manual Ask is explicit: it still works when general Auto Capture is OFF.
+const captureOff = contentHarness([], false);
+captureOff.context.__tfOutboundQuestions = new Set([QUESTION]);
+captureOff.messages.push(...pair());
+captureOff.trigger();
+captureOff.advance(5000);
+assert.equal(captureOff.forwarded.length, 1);
+assert.equal(captureOff.forwarded[0].payload.answer, ANSWER);
 
 // Background routes the captured Q+A to the originating Notes request.
 const session = {};
@@ -217,4 +240,4 @@ assert.equal((await sendMessage({ type: "TF_TRY_SEND", payload: retryPair }, cha
 assert.equal(deliveries.filter((item) => item.msg.type === "TF_NOTES_AI_RESULT" &&
   item.msg.requestId === req2 && item.msg.result.answer === "Working together.").length, 2); // failed attempt + retry
 
-console.log("PASS: working Q+A collector returns answers to Notes, navigation baseline, no duplicate child/append, retry");
+console.log("PASS: Notes answers via Q+A capture, navigation/repeated prompt, capture OFF, no duplicate child, retry");
