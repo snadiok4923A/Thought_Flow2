@@ -25,11 +25,16 @@
   // Let the existing Q+A auto-capture engine deliver Notes answers too.
   // This marker does NOT resend the question; it only permits the new
   // completed pair to be forwarded to its original Notes request.
-  function markNotesQuestion(key) {
+  function markNotesQuestion(key, recoverAfterNavigation = false) {
     const keys = globalThis.__tfOutboundQuestionKeys || new Set();
     globalThis.__tfOutboundQuestionKeys = keys;
     keys.add(key);
-    globalThis.TFCapture?.allowPendingNoteQuestion?.(key);
+    // Do NOT unlock previously captured identical questions on the initial
+    // Ask click. Only unlock a baseline-skipped pair in a NEW document after
+    // the original watcher was lost to ChatGPT navigation.
+    if (recoverAfterNavigation) {
+      globalThis.TFCapture?.allowPendingNoteQuestion?.(key);
+    }
   }
 
   function readMessages() {
@@ -229,12 +234,14 @@
       sendResponse({ ok: false, error: "Invalid recovery request." });
       return;
     }
-    // Recover previously baseline-skipped Q+A on a navigated/reloaded page.
-    markNotesQuestion(msg.questionKey);
     if (busy) {
+      // The original document/watch is still alive. Do not re-baseline or
+      // accidentally return an OLD answer to a repeated question.
       sendResponse({ ok: true, alreadyWatching: true });
       return;
     }
+    // Only a newly created content-script document needs re-baseline repair.
+    markNotesQuestion(msg.questionKey, true);
     busy = true;
     sendResponse({ ok: true, watching: true });
     // The navigated page contains the submitted user question. Match it
