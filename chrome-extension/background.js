@@ -180,10 +180,11 @@ async function handleCapture(payload) {
     return { drop: true, reason: "website-off" };
   }
   const r = direct.result || {};
-  if (r.created || r.duplicate) {
-    dbg("direct-ok", r.duplicate ? "duplicate acknowledged" : "node created");
-    if (!r.duplicate) await bumpCounter();
-    return { accepted: true, duplicate: !!r.duplicate };
+  if (r.created || r.updated || r.duplicate) {
+    dbg("direct-ok", r.updated ? "existing node updated" :
+      r.duplicate ? "duplicate acknowledged" : "node created");
+    if (r.created) await bumpCounter();
+    return { accepted: true, duplicate: !!r.duplicate, updated: !!r.updated };
   }
   // Tab received it but the website dropped it (panel OFF / no start node /
   // no board open). Transient — content script retries after cooldown.
