@@ -40,6 +40,26 @@
 
   const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
 
+  // Same compact question signature as background.js/chatgpt-ask.js.
+  // Used only to match an explicit Notes Ask with its returned Q+A pair.
+  function noteQuestionKey(question) {
+    const value = normalize(question);
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return value.length + ":" + (hash >>> 0).toString(36);
+  }
+
+  function isPendingNotesQuestion(question) {
+    const plain = normalize(question);
+    return !!(
+      globalThis.__tfOutboundQuestions?.has(plain) ||
+      globalThis.__tfOutboundQuestionKeys?.has(noteQuestionKey(plain))
+    );
+  }
+
   function pairFingerprint(platform, convId, p) {
     return hash(
       [platform, convId || "", p.qid || "", p.aid || "", normalize(p.question), normalize(p.answer)].join("\u0000")
@@ -221,14 +241,12 @@
 
         pairs.forEach((p, idx) => {
           const fp = pairFingerprint(selectors.platform, state.convId, p);
-          // Questions initiated by ThoughtFlow's Notes button must update that
-          // existing node, NOT generate an extra child via normal auto-capture.
-          if (selectors.platform === "chatgpt" &&
-              globalThis.__tfOutboundQuestions?.has(normalize(p.question))) {
-            remember(fp);
-            state.stats.delete(fp);
-            return;
-          }
+          // Do NOT discard questions originating in Notes. They must go
+          // through the normal, proven Q+A collector. The background router
+          // recognizes this explicit Notes question and routes its answer
+          // BACK to the existing Notes editor instead of making a child node.
+          const pendingNote = selectors.platform === "chatgpt" &&
+            isPendingNotesQuestion(p.question);
           if (state.seen.has(fp)) {
             state.stats.delete(fp);
             return;
@@ -266,7 +284,7 @@
           const stuckStreaming = streaming && stableFor >= stabilityMs * 3;
           const settled = settledByTime && (!streaming || stuckStreaming);
 
-          if (!state.baselineDone) {
+          if (!state.baselineDone && !pendingNote) {
             // Baseline: every finished pair already on screen is skipped so
             // old conversations NEVER retro-capture. Only the last pair of a
             // conversation that is ACTIVELY STREAMING survives (an in-flight
@@ -322,6 +340,26 @@
         tick();
       }, SCAN_DEBOUNCE_MS);
     }
+
+    // When ChatGPT navigates to a new conversation, the initial scan may
+    // have treated a newly answered question as existing history. The
+    // background sends the pending question signature on navigation, so
+    // unlock ONLY that Q+A pair for a normal settled capture scan.
+    globalThis.TFCapture.allowPendingNoteQuestion = (key) => {
+      if (typeof key !== "string" || !/^[0-9]+:[a-z0-9]+$/.test(key)) return;
+      const keys = globalThis.__tfOutboundQuestionKeys || new Set();
+      globalThis.__tfOutboundQuestionKeys = keys;
+      keys.add(key);
+      const { pairs } = collectPairs();
+      pairs.forEach((pair) => {
+        if (noteQuestionKey(pair.question) !== key) return;
+        const fp = pairFingerprint(selectors.platform, state.convId, pair);
+        state.seen.delete(fp);
+        state.stats.delete(fp);
+        state.retryAfter.delete(fp);
+      });
+      schedule();
+    };
 
     const observer = new MutationObserver(schedule);
     observer.observe(document.documentElement, {
