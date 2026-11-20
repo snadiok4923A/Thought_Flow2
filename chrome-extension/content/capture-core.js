@@ -67,6 +67,13 @@
     );
   }
 
+  // Stable across a streaming response's many partial versions. Unlike the
+  // delivery fingerprint, it intentionally excludes the assistant text.
+  // Distinct repeated questions in one chat have distinct turn indices.
+  function turnFingerprint(platform, convId, p, index) {
+    return hash([platform, convId || "", index, normalize(p.question)].join("\u0000"));
+  }
+
   function start(selectors) {
     if (!selectors || typeof selectors.collectMessages !== "function") return;
     if (!selectors.isSupportedPage()) return;
@@ -205,7 +212,7 @@
       return { pairs, msgCount: msgs.length };
     }
 
-    function send(pair, fp, convId) {
+    function send(pair, fp, convId, turnKey) {
       // Never mark a pair as "seen" before the server durably accepts (or
       // queues, or definitively rejects) it — otherwise a transient drop
       // (website panel OFF, network blip) would lose the answer forever.
@@ -247,6 +254,7 @@
         answer: pair.answer,
         messageIds: [pair.qid, pair.aid].filter(Boolean),
         fingerprint: fp,
+        turnKey,
         // direction + parentNodeId are intentionally omitted: the server fills
         // them from the website session (panel/popup), which owns that state.
       };
@@ -287,7 +295,9 @@
         const baseStabilityMs = state.settings.stabilityMs || DEFAULT_STABILITY_MS;
         const stabilityMs = selectors.platform === "chatgpt"
           ? Math.max(4500, baseStabilityMs)
-          : baseStabilityMs;
+          : selectors.platform === "gemini"
+            ? Math.max(5500, baseStabilityMs)
+            : baseStabilityMs;
         const now = Date.now();
 
         // Throttled scan heartbeat — only when the observable state changes.
@@ -309,6 +319,7 @@
 
         pairs.forEach((p, idx) => {
           const fp = pairFingerprint(selectors.platform, state.convId, p);
+          const turnKey = turnFingerprint(selectors.platform, state.convId, p, idx);
           // Do NOT discard questions originating in Notes. They must go
           // through the normal, proven Q+A collector. The background router
           // recognizes this explicit Notes question and routes its answer
@@ -317,7 +328,7 @@
             isPendingNotesQuestion(p.question);
           const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
           if (state.seen.has(fp)) {
-            state.stats.delete(fp);
+            state.stats.delete(turnKey);
             return;
           }
           // A send is already in flight for this pair — wait for its response.
@@ -336,11 +347,11 @@
           }
 
           const sig = hash(normalize(p.question) + "\u0001" + normalize(p.answer));
-          let st = state.stats.get(fp);
+          let st = state.stats.get(turnKey);
           if (!st || st.lastSig !== sig) {
             const first = !st;
             st = { lastSig: sig, stableSince: now };
-            state.stats.set(fp, st);
+            state.stats.set(turnKey, st);
             if (first && p.answer) {
               dbg("answer-seen", `q=${p.question.length}c a=${p.answer.length}c (waiting for completion)`);
             }
@@ -362,16 +373,16 @@
             const inFlight = streaming && idx === lastIdx;
             if (!inFlight) {
               remember(fp);
-              state.stats.delete(fp);
+              state.stats.delete(turnKey);
               dbg("baseline-skip", `q=${p.question.length}c`);
             }
             return;
           }
 
           if (settled) {
-            state.stats.delete(fp);
+            state.stats.delete(turnKey);
             if (streaming && stuckStreaming) dbg("streaming-override", "indicator stuck — text static, capturing");
-            send(p, fp, state.convId);
+            send(p, fp, state.convId, turnKey);
           }
           // else: still streaming or text still changing → wait.
         });
@@ -426,8 +437,9 @@
       const pair = pairs[pairs.length - 1];
       if (pair && noteQuestionKey(pair.question) === key) {
         const fp = pairFingerprint(selectors.platform, state.convId, pair);
+        const turnKey = turnFingerprint(selectors.platform, state.convId, pair, pairs.length - 1);
         state.seen.delete(fp);
-        state.stats.delete(fp);
+        state.stats.delete(turnKey);
         state.retryAfter.delete(fp);
       }
       schedule();
