@@ -192,6 +192,46 @@ async function handleCapture(payload) {
   return { drop: true, reason: r.reason || "website-off" };
 }
 
+// Recover manual ChatGPT Send intent after the first new-chat navigation.
+// Store only a short-lived keyed fingerprint, never a prompt's raw text.
+// Chrome's service worker and content-script document can restart separately.
+const SUBMISSION_PREFIX = "tf-chatgpt-submission:";
+const SUBMISSION_TTL_MS = 120000;
+
+function isValidSubmissionKey(key) {
+  return typeof key === "string" && /^[0-9]+:[a-z0-9]+$/.test(key) &&
+    key.length <= 45;
+}
+
+async function rememberChatGPTSubmission(sender, key) {
+  if (!isChatGPTUrl(sender?.url || sender?.tab?.url) ||
+      typeof sender?.tab?.id !== "number" ||
+      !isValidSubmissionKey(key)) {
+    return { ok: false, error: "Invalid ChatGPT submission." };
+  }
+  const now = Date.now();
+  await chrome.storage.session.set({
+    [SUBMISSION_PREFIX + sender.tab.id]: { key, at: now, expiresAt: now + SUBMISSION_TTL_MS },
+  });
+  dbg("submission-persisted", "fingerprint only");
+  return { ok: true };
+}
+
+async function retrieveChatGPTSubmission(sender) {
+  if (!isChatGPTUrl(sender?.url || sender?.tab?.url) ||
+      typeof sender?.tab?.id !== "number") {
+    return { ok: false };
+  }
+  const key = SUBMISSION_PREFIX + sender.tab.id;
+  const item = (await chrome.storage.session.get(key))[key];
+  if (!item || !isValidSubmissionKey(item.key) || item.expiresAt < Date.now()) {
+    if (item) await chrome.storage.session.remove(key);
+    return { ok: true };
+  }
+  dbg("submission-restored", "pending submission after navigation");
+  return { ok: true, key: item.key, at: item.at, expiresAt: item.expiresAt };
+}
+
 // Node Notes -> extension -> logged-in ChatGPT -> SAME Note.
 // Never hold a Chrome/Brave MV3 message port open for the full AI response.
 // Use chrome.storage.session to retain routing IDs across service-worker sleeps;
@@ -502,6 +542,19 @@ async function diagnose() {
 // ---- Messaging ---------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
+
+  if (msg.type === "TF_CHATGPT_SUBMISSION") {
+    rememberChatGPTSubmission(sender, msg.key)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: e?.message || "Unable to save Send marker" }));
+    return true;
+  }
+  if (msg.type === "TF_CHATGPT_SUBMISSION_GET") {
+    retrieveChatGPTSubmission(sender)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: e?.message || "Unable to read Send marker" }));
+    return true;
+  }
 
   if (msg.type === "TF_ASK_CHATGPT") {
     startChatGPTNoteJob(sender, msg.question, msg.requestId)
