@@ -132,6 +132,19 @@ export function toTreeDirection(dir) {
   return normalizeCaptureDirection(dir) === "right" ? "right" : "down";
 }
 
+// A single AI question may produce several delivered revisions while the
+// model is generating. Decide whether its already-created node can be safely
+// refreshed without replacing a user's manual edits.
+export function planDirectCaptureUpsert(recorded, existingNode, nextNoteHtml) {
+  if (!recorded || !existingNode) return 'create';
+  if (typeof recorded === 'object' &&
+      recorded.noteHtml === existingNode.notes &&
+      nextNoteHtml !== existingNode.notes) {
+    return 'update';
+  }
+  return 'duplicate';
+}
+
 // ---- Applied-item ledger ---------------------------------------------------
 // Maps server capture id → created node id, persisted in localStorage so a
 // lost ack (or a page reload before the ack landed) can never duplicate a node.

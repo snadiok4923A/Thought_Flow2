@@ -211,6 +211,51 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### One Node per Q+A, including Gemini streaming updates (v1.1.8)
+
+Gemini can briefly pause generation, so a partially written answer may appear
+stable before the full answer arrives. Previously a capture fingerprint
+included the *full answer*, meaning every subsequent revision could create
+another node with the same question.
+
+Completed Q+A deliveries now include a stable `turnKey` based on platform,
+conversation, position within the conversation, and question (NOT the answer).
+The ThoughtFlow page uses this identity to **update the original node's
+generated Notes** when the answer changes instead of adding another child.
+It refuses to replace Notes that the user has edited after capture. For Gemini,
+the unchanged-text settle window is now at least 5.5 seconds, reducing
+premature fragments. If a very long streaming pause still causes an early
+capture, the later full answer updates the same node.
+
+### ChatGPT Send intent survives document replacement (v1.1.8)
+
+Even after the previous first-turn baseline fix, a *full document reload*
+could lose the content script's in-memory Send marker while ChatGPT creates a
+new conversation. The extension background now stores only a short-lived
+hashed submission key, timestamp and originating tab ID in
+`chrome.storage.session`; it **never stores the raw prompt**. On the
+newly loaded ChatGPT document, capture-core requests this marker, unlocks
+only the latest matching Q+A if baseline already skipped it, and continues
+the existing capture/Notes routing. Other historical messages remain skipped.
+
+For regression checks:
+
+```bash
+node chrome-extension/test/streaming-turn-upsert.mjs
+node chrome-extension/test/submission-intent-routing.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+```
+
+After merging, pull the main branch, reload the unpacked extension
+(**v1.1.8**) in `chrome://extensions`, and refresh ThoughtFlow and both
+ChatGPT/Gemini tabs. A new question should create one node; if Gemini
+continues producing content, that node's Notes update with the longer answer.
+For a Notes `Ask ChatGPT` request, the answer should instead return to that
+same selected Notes panel without making a child. A successful simulated
+test is not proof of live-browser compatibility; share the most recent
+Diagnostics events if the problem persists.
+
 ### First ChatGPT question after a new conversation URL change (v1.1.7)
 
 **Bug reproduction:** a user sends the first question from `chatgpt.com/`,

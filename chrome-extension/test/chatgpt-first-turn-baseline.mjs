@@ -65,8 +65,9 @@ function harness({ initial = [], conversationId = "", platform = "chatgpt" } = {
       runtime: {
         lastError: null,
         sendMessage(message, response) {
-          sent.push(message.payload);
-          response({ accepted: true });
+          if (message.type === "TF_TRY_SEND") sent.push(message.payload);
+          response(message.type === "TF_CHATGPT_SUBMISSION_GET"
+            ? { ok: true } : { accepted: true });
         },
       },
     },

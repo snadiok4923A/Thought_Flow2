@@ -69,8 +69,9 @@ function contentHarness(initialMessages = [], captureEnabled = true) {
       runtime: {
         lastError: null,
         sendMessage(payload, respond) {
-          forwarded.push(payload);
-          respond({ accepted: true, duplicate: true });
+          if (payload.type === "TF_TRY_SEND") forwarded.push(payload);
+          respond(payload.type === "TF_CHATGPT_SUBMISSION_GET"
+            ? { ok: true } : { accepted: true, duplicate: true });
         },
       },
       storage: {
