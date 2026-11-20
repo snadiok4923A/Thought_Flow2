@@ -211,6 +211,36 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+## Ask ChatGPT directly from an existing node's Notes (no API)
+
+This feature uses the SAME Chrome/Brave extension and an already-open,
+logged-in ChatGPT tab. It does not create a separate AI page or backend.
+It does not send the question to the current ChatGPT conversation unless
+that particular conversation is the tab the extension is using.
+
+1. Open ChatGPT in a browser tab and sign in.
+2. Open ThoughtFlow, select the node you want to work with, and type a
+   question in its existing Notes editor.
+3. Press **Ask ChatGPT** on that Notes editor's toolbar.
+4. The extension sends the question to the open ChatGPT tab, waits for the
+   NEW reply to finish, and appends only the answer below the existing
+   question in the **same node's Notes**. No new child node is created.
+5. The normal auto-capture for conversations you start in ChatGPT yourself
+   still works, but questions sent from Notes are excluded from auto-capture.
+
+Notes:
+- The question is shared with the existing logged-in ChatGPT website only
+  when the button is clicked. **No OpenAI API key** or separate server is used.
+- The ChatGPT composer must be empty (unsent drafts are never overwritten).
+- The ChatGPT tab must stay open. A changing ChatGPT UI may break automation;
+  the Notes toolbar shows a readable error in that case.
+- If a response timed out, **check the ChatGPT tab before clicking again**:
+  ChatGPT may have answered even if the extension could not return it.
+- The latest response is plain text, escaped for HTML safety and appended
+  after a blank line. Existing notes and their formatting are preserved.
+- Only the specific selected Note is updated; switching nodes while waiting
+  does not redirect the answer to a different node.
+
 ## Chrome extension popup
 
 - **Capture** — extension-level switch (website panel is the second switch; both must be ON)
