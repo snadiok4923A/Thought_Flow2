@@ -101,18 +101,14 @@ export function sourceLabel(source) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// Exact conversation text, preserved verbatim (no summarizing/rewriting):
-//
-//   User:
-//   <question>
-//
-//   ChatGPT:
-//   <answer>
-export function buildCaptureNoteHtml({ source, question, answer }) {
-  const label = sourceLabel(source);
+// Keep only the actual question and answer; never add platform/speaker
+// labels to the Notes editor. Separate the two messages with a blank line.
+// Escape user-provided HTML, preserving line breaks within each message.
+export function buildCaptureNoteHtml({ question, answer }) {
   return (
-    `<p><strong>User:</strong></p><p>${textToHtml(question)}</p>` +
-    `<p><strong>${label}:</strong></p><p>${textToHtml(answer)}</p>`
+    `<p>${textToHtml(question)}</p>` +
+    `<p><br></p>` +
+    `<p>${textToHtml(answer)}</p>`
   );
 }
 
