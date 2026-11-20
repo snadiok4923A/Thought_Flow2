@@ -211,6 +211,26 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### Navigating to a new ChatGPT conversation
+
+ChatGPT may change its URL (for example from `chatgpt.com/` to
+`chatgpt.com/c/<conversation-id>`) just after the extension submits a Notes
+question. The old page script can then disappear before its answer monitor
+finishes. The extension now retains only a **fingerprint of the question**
+and the associated tab/request IDs, and reinstalls its read-only answer watcher
+after the tab changes. This resumed watcher **does not resend the question**.
+
+A periodic recovery check also helps if the browser misses the navigation
+event. ThoughtFlow reports **"Question sent. Waiting for ChatGPT answer..."**
+after the first acknowledgement. An existing unsent ChatGPT draft is never
+overwritten. The regular AI capture path suppresses the same Notes question
+so it does not generate an extra child node.
+
+If the answer is visible on ChatGPT but never returns to ThoughtFlow, check
+that both tabs are open and the extension loaded correctly, then inspect
+`brave://extensions` for the expected **v1.1.3** extension. Always inspect
+the ChatGPT tab before retrying: a previous question may already be answered.
+
 ### ChatGPT replies and Chrome/Brave message ports
 
 The extension acknowledges the Notes **Ask ChatGPT** request immediately,

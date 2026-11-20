@@ -103,6 +103,12 @@ window.addEventListener("message", (event) => {
          respond({ ok: false, error: "Could not start ChatGPT: " + error });
        } else if (!result?.ok || !result.started) {
          respond({ ok: false, error: result?.error || "Extension could not start ChatGPT." });
+       } else {
+         // This is only progress feedback. Actual answer is delivered later.
+         window.postMessage({
+           source: "thoughtflow-ask-chatgpt-started",
+           requestId,
+         }, window.location.origin);
        }
      });
    } catch (err) {
