@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../content/selectors-universal.js", import.meta.url), "utf8");
+const genericSource = readFileSync(new URL("../content/selectors-generic.js", import.meta.url), "utf8");
 const entry = readFileSync(new URL("../content/universal.js", import.meta.url), "utf8");
 const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
 
@@ -106,6 +107,45 @@ const onlyUser = platform({
 });
 assert.equal(onlyUser.result.collectMessages().length, 1);
 assert.equal(onlyUser.result.probeStrategy(), "native-partial");
+
+// Actual generic selector regression: role attributes expose only the user,
+// while turn containers contain both user and assistant. The selector must
+// continue to the second strategy instead of returning msgs=1, pairs=0.
+function fakeElement(text, role = "", id = "") {
+  return {
+    innerText: text, isConnected: true, id, tagName: "DIV",
+    className: "", getClientRects: () => [1],
+    getAttribute(name) { return name === "data-message-author-role" ? role : null; },
+    contains(other) { return other === this; },
+    compareDocumentPosition(other) { return this.id === "u" ? 4 : 2; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+  };
+}
+const userBody = fakeElement(q.text, "user", "u");
+const assistantBody = fakeElement(a.text, "assistant", "a");
+const userArticle = { ...fakeElement(q.text), querySelector(selector) {
+  if (selector.includes(".whitespace-pre-wrap")) return userBody;
+  return null;
+} };
+const assistantArticle = { ...fakeElement(a.text), querySelector(selector) {
+  if (selector.includes(".markdown")) return assistantBody;
+  return null;
+} };
+const genericContext = {
+  location: { hostname: "chat.deepseek.com", pathname: "/chat/abc", search: "" },
+  Node: { DOCUMENT_POSITION_FOLLOWING: 4 },
+  URLSearchParams,
+  document: { querySelectorAll(selector) {
+    if (selector.includes("[data-message-author-role]")) return [userBody];
+    if (selector.includes("main article")) return [userArticle, assistantArticle];
+    return [];
+  } },
+};
+genericContext.globalThis = genericContext;
+vm.runInNewContext(genericSource, genericContext);
+assert.equal(genericContext.TF_GENERIC_SELECTORS.collectMessages().length, 2);
+assert.equal(genericContext.TF_GENERIC_SELECTORS.probeStrategy(), "turns");
 
 // Shared capture entry is idempotent and status never reveals raw Q+A text.
 let startCount = 0;
