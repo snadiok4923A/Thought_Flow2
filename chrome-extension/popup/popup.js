@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 
 let settings = null;
 let session = null;
+let activeAIChatTab = null;
 
 // Developer-only UI: preserve Diagnostics and Settings without showing them
 // in the everyday popup. Shift-click the header logo or press Alt+Shift+D
@@ -67,19 +68,40 @@ const KNOWN_PLATFORMS = [
 
 async function detectPlatform() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const url = (tab && tab.url) || "";
+  const raw = (tab && tab.url) || "";
+  let url = null;
+  try { url = new URL(raw); } catch { /* browser internal page */ }
   let name = "Unsupported page";
   let on = false;
   for (const [re, label] of KNOWN_PLATFORMS) {
-    if (re.test(url)) {
+    if (re.test(raw)) {
       name = label;
       on = true;
       break;
     }
   }
+  const eligible = !!(url && url.protocol === "https:" &&
+    url.hostname !== "snadiok4923a.github.io" &&
+    tab && typeof tab.id === "number");
+  const custom = eligible && !on;
+  activeAIChatTab = custom ? { tabId: tab.id, host: url.hostname,
+    originPattern: "https://" + url.hostname + "/*" } : null;
+  $("enableSiteRow").hidden = !custom;
+  if (custom) {
+    let enabled = false;
+    try {
+      enabled = await chrome.permissions.contains({ origins: [activeAIChatTab.originPattern] });
+    } catch { /* user has not granted this host */ }
+    name = enabled ? "Universal capture enabled" : "Other AI chat — opt in";
+    $("enableSiteBtn").disabled = enabled;
+    $("enableSiteBtn").textContent = enabled ? "Capture enabled for this site" : "Enable capture on this site";
+    if (!enabled) setStatus("Enable capture for this AI website, or use Quick add.");
+    on = enabled;
+  } else if (!on) {
+    setStatus("Open a supported AI chat, or use Quick add.");
+  }
   $("platformName").textContent = name;
   $("platformDot").className = "dot " + (on ? "on" : "off");
-  if (!on) setStatus("Open an AI chat (ChatGPT, Gemini, Arena…) to capture, or use Quick add.");
 }
 
 async function refreshHealth() {
@@ -116,6 +138,59 @@ async function loadSession() {
     /* server offline */
   }
 }
+
+// Each extra AI site requires a conscious opt-in. No extension-wide
+// <all_urls> automatic content access is requested at installation.
+// Dynamic scripts persist for this single approved HTTPS host only.
+$("enableSiteBtn").addEventListener("click", async () => {
+  const tabInfo = activeAIChatTab;
+  if (!tabInfo) return;
+  const status = $("enableSiteStatus");
+  status.textContent = "Requesting permission for this site…";
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ origins: [tabInfo.originPattern] });
+  } catch (error) {
+    status.textContent = "Permission error: " + (error?.message || "not granted");
+    return;
+  }
+  if (!granted) {
+    status.textContent = "Permission not granted; no chat content was accessed.";
+    return;
+  }
+
+  const id = "tf-ai-" + tabInfo.host.replace(/[^a-zA-Z0-9]/g, "-").slice(0, 160);
+  const files = [
+    "utils/debug.js",
+    "content/capture-core.js",
+    "content/selectors-generic.js",
+    "content/selectors-universal.js",
+    "content/universal.js",
+  ];
+  const spec = {
+    id, matches: [tabInfo.originPattern], js: files,
+    runAt: "document_idle", persistAcrossSessions: true,
+  };
+  try {
+    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [id] });
+    if (existing.length) {
+      await chrome.scripting.updateContentScripts([spec]);
+    } else {
+      await chrome.scripting.registerContentScripts([spec]);
+    }
+    // Enable immediately on this already-open chat; registered scripts cover
+    // its future page navigations and survive the next browser session.
+    await chrome.scripting.executeScript({
+      target: { tabId: tabInfo.tabId },
+      world: "ISOLATED",
+      files,
+    });
+    status.textContent = "Enabled. Start a NEW chat on this website to test capture.";
+    await detectPlatform();
+  } catch (error) {
+    status.textContent = "Capture setup failed: " + (error?.message || "unknown error");
+  }
+});
 
 function renderToggle() {
   const on = !!settings.captureEnabled;
@@ -241,6 +316,27 @@ async function runDiagnostics() {
       : d.session && (d.session.rootNodeId || d.session.currentParentNodeId);
     parts.push(hasStart ? "Start node ✓" : "Start node ✗");
     if (d.queue > 0) parts.push(`queued: ${d.queue}`);
+
+    // Health must verify the input side too. "Connected" alone only proves
+    // ThoughtFlow is open; it does not mean that the AI page was detected.
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const isAI = KNOWN_PLATFORMS.some(([re]) => re.test(tab?.url || "")) ||
+        (activeAIChatTab && activeAIChatTab.tabId === tab?.id);
+      if (tab && isAI && typeof tab.id === "number") {
+        const detector = await chrome.tabs.sendMessage(tab.id, {
+          type: "TF_AI_DETECTOR_STATUS",
+        });
+        if (detector?.ready) {
+          parts.push(`AI ${detector.platform}: ${detector.messages} msgs, ${detector.pairs} Q+A (${detector.strategy})`);
+        } else {
+          parts.push("AI detector unavailable");
+        }
+      }
+    } catch {
+      parts.push("AI detector missing on this tab — refresh it or enable capture");
+    }
+
     pipe.textContent = (d.gate === "OK" ? "PIPELINE OK — " : `BLOCKED: ${d.gate} — `) + parts.join(" · ");
     pipe.className = "diag-pipeline " + (d.gate === "OK" ? "ok" : "bad");
     renderEvents(d.events);

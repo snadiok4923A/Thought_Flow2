@@ -87,8 +87,10 @@ assert.deepEqual(JSON.parse(JSON.stringify(ack)), { ok: true, started: true });
 assert.deepEqual(Array.from(injections[0].files), [
   "utils/debug.js",
   "content/capture-core.js",
+  "content/selectors-generic.js",
   "content/selectors-chatgpt.js",
-  "content/chatgpt.js",
+  "content/selectors-universal.js",
+  "content/universal.js",
 ]);
 assert.deepEqual(Array.from(injections[1].files), ["content/chatgpt-ask.js"]);
 assert.equal(deliveries[0].message.type, "TF_CHATGPT_ASK_START");
