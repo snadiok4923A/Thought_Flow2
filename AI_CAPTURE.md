@@ -1,3 +1,56 @@
+## ChatGPT full-answer capture quality — experimental v1.2.1
+
+**Observed:** The user asked ChatGPT **"Another"**, which returned a long
+Python coding example, but ThoughtFlow created a node with the Q+A
+`another` / `Another` instead of the completed multi-section response.
+Another question sometimes captured a longer answer correctly. Gemini
+still captured both messages, so the existing connection/bridge worked.
+
+Changes **only for ChatGPT**:
+
+- ChatGPT's testid/article extractor previously selected the **first**
+  `.markdown` element of an assistant turn. Now it prefers the complete
+  assistant role body, otherwise reads the full assistant turn if the
+  first snippet is substantially shorter. This is intended to include
+  later markdown and code blocks in the same reply.
+- The shared universal selector wrapper can prefer an explicitly role-marked
+  generic answer when **the latest question matches** ChatGPT's native
+  extraction, but the generic answer is substantially longer. Gemini's
+  native extraction preference is unchanged.
+- In the shared capture engine, a short ChatGPT response that simply
+  echoes the user question (case-insensitively) is treated as a possible
+  temporary fragment and is **not delivered**. ChatGPT's text-stability
+  window is increased from 4.5 to **8 seconds**, to reduce early
+  partial-answer capture. Gemini and other providers retain their existing
+  windows.
+
+These are defensive quality improvements, **not a claim of guaranteed
+completion** on the live ChatGPT website. If ChatGPT changes its DOM or
+generation indicators, another measured adjustment may still be needed.
+This release does **not** automatically repair Notes already created
+with a partial answer.
+
+Regression tests:
+
+```bash
+node chrome-extension/test/chatgpt-full-answer-quality.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/universal-qa-detector.mjs
+node chrome-extension/test/universal-capture-pipeline.mjs
+```
+
+Before merging the PR, test its branch against a *fresh* ChatGPT question
+that produces a multi-paragraph response with a code block. Allow at least
+8 seconds after the response has stopped changing. Confirm that the newly
+created ThoughtFlow Note contains the entire visible answer. Then check
+that Gemini still captures one normal Q+A as before. If capture fails,
+inspect the extension's diagnostic events, especially
+`answer-echo-wait`, `scan`, `answer-seen`, `send`, `direct-ok`,
+and `send-dropped`. Diagnostics do not include private Q+A text.
+
+---
+
 ## Universal AI chat capture — experimental v1.2.0
 
 ThoughtFlow now has **one shared capture engine** and **one universal message
