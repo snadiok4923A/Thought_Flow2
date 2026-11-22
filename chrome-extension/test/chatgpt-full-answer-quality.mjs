@@ -57,7 +57,7 @@ vm.runInNewContext(nativeSource, nativeContext);
 const extracted = nativeContext.TF_SELECTORS.collectMessages();
 assert.equal(extracted.length, 2);
 assert.equal(extracted[0].text, question);
-assert.equal(extracted[1].text, fullAnswer, "Read full assistant turn, not first 'Another' snippet");
+assert.equal(extracted[1].text, fullAnswer.trim(), "Read full assistant turn, not first 'Another' snippet");
 
 // Universal selector must favor complete ChatGPT answer if native DOM
 // yields only a truncated assistant response but the generic role strategy
@@ -87,7 +87,7 @@ const fallbackContext = {
 };
 fallbackContext.globalThis = fallbackContext;
 vm.runInNewContext(universalSource, fallbackContext);
-assert.equal(fallbackContext.TF_SELECTORS.collectMessages()[1].text, fullAnswer);
+assert.equal(fallbackContext.TF_SELECTORS.collectMessages()[1].text, fullAnswer.trim());
 assert.equal(fallbackContext.TF_SELECTORS.probeStrategy(), "universal-fuller-answer");
 
 // Gemini native content has priority even when a generic selector reports
