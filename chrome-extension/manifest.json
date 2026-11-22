@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.1.9",
-  "description": "Captures complete Q+A pairs from ChatGPT, Gemini, Arena and other AI chat sites exactly as visible and sends them directly to your open ThoughtFlow tab to become mind-map nodes (no server needed).",
+  "version": "1.2.0",
+  "description": "Opt-in universal Q+A capture for supported AI chat websites, with one shared capture engine and conservative fallback.",
   "permissions": [
     "storage",
     "alarms",
     "tabs",
-    "scripting"
+    "scripting",
+    "permissions"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -56,8 +57,10 @@
       "js": [
         "utils/debug.js",
         "content/capture-core.js",
+        "content/selectors-generic.js",
         "content/selectors-chatgpt.js",
-        "content/chatgpt.js"
+        "content/selectors-universal.js",
+        "content/universal.js"
       ],
       "run_at": "document_idle"
     },
@@ -68,8 +71,10 @@
       "js": [
         "utils/debug.js",
         "content/capture-core.js",
+        "content/selectors-generic.js",
         "content/selectors-gemini.js",
-        "content/gemini.js"
+        "content/selectors-universal.js",
+        "content/universal.js"
       ],
       "run_at": "document_idle"
     },
@@ -108,7 +113,8 @@
         "utils/debug.js",
         "content/capture-core.js",
         "content/selectors-generic.js",
-        "content/generic.js"
+        "content/selectors-universal.js",
+        "content/universal.js"
       ],
       "run_at": "document_idle"
     },
@@ -127,5 +133,8 @@
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "ThoughtFlow AI Capture"
-  }
+  },
+  "optional_host_permissions": [
+    "https://*/*"
+  ]
 }
