@@ -211,6 +211,46 @@ Users can still override API/token in panel ⚙ Settings / popup Settings
 > `ALLOWED_ORIGINS`, and rotate the token if the API is ever abused. Fine
 > for personal / small-team use.
 
+### ChatGPT first message across full page navigation (v1.1.9)
+
+**Symptom:** ChatGPT successfully answers, but ThoughtFlow has no child node
+and often logs `scan — msgs=2 pairs=1 streaming=false` followed by
+`baseline-skip`. The existing v1.1.7 Send marker was held only in the
+ChatGPT content script's JavaScript memory. A full document navigation
+from `chatgpt.com/` to `chatgpt.com/c/<id>` destroys that memory.
+
+**Targeted fix:** On a manual ChatGPT Send-button click, Enter, or a
+ThoughtFlow Notes **Ask ChatGPT** send, the ChatGPT capture script now
+records only a short-lived normalized question fingerprint and timestamp in
+the ChatGPT **tab's web sessionStorage**. When the new document loads, it
+restores that marker *before* the first baseline scan. Thus only a recent,
+matching first Q+A bypasses the old-conversation baseline. On successful
+delivery, the marker is removed. The marker expires after two minutes,
+is not shared between tabs, and never contains the raw question/answer.
+
+This patch deliberately does **not** modify Gemini selectors, Gemini
+capture logic, ThoughtFlow's Notes editor, node tree, or existing background
+messaging. The former 1.1.8 release was rolled back; the new release is
+numbered 1.1.9 to distinguish it.
+
+Regression check:
+
+```bash
+node chrome-extension/test/chatgpt-tab-session-capture.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+```
+
+To verify in Chrome/Brave, merge and pull, reload the unpacked extension,
+confirm **v1.1.9**, then refresh ChatGPT and ThoughtFlow (save any unsaved
+Notes first). Open a brand new ChatGPT chat, type and submit a new question,
+and check that exactly one corresponding node appears after the answer
+settles. After that, test Notes **Ask ChatGPT** separately. If the new
+ChatGPT tab still fails, inspect Diagnostics for `submission-observed`,
+`submission-saved`, `submission-restored`, `baseline-skip`,
+`answer-seen`, `send` and `note-answer-captured` before trying
+another change. These log lines exclude private Q+A text.
+
 ### First ChatGPT question after a new conversation URL change (v1.1.7)
 
 **Bug reproduction:** a user sends the first question from `chatgpt.com/`,
