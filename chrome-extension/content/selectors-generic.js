@@ -24,7 +24,7 @@
 //
 // NOTE: the site list that decides where this file runs lives in manifest.json.
 
-globalThis.TF_SELECTORS = (function () {
+globalThis.TF_GENERIC_SELECTORS = (function () {
   var MAX_TEXT = 120000;
 
   // ---- host → backend "source" tag ------------------------------------------
@@ -365,3 +365,5 @@ globalThis.TF_SELECTORS = (function () {
     isStreaming: isStreaming,
   };
 })();
+// Keep the legacy generic entry point compatible with existing tests.
+globalThis.TF_SELECTORS = globalThis.TF_GENERIC_SELECTORS;
