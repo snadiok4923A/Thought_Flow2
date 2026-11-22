@@ -17,6 +17,10 @@
   const DEFAULT_STABILITY_MS = 2000;
   const SEEN_CAP = 600;
   const SUBMISSION_INTENT_TTL_MS = 120000; // for a new ChatGPT conversation URL
+  // Web sessionStorage is scoped to this ChatGPT browser tab/origin and lives
+  // across full document navigation; unlike JS variables, it survives the
+  // transition from / to /c/<id>. Only a question fingerprint is stored.
+  const CHATGPT_SEND_SESSION_KEY = "thoughtflow:chatgpt:recent-send:v1";
 
   function dbg(event, detail) {
     try {
@@ -138,6 +142,43 @@
       return normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     }
 
+    // In a new ChatGPT conversation, navigation sometimes replaces the
+    // entire document. Without this marker, the new content script sees the
+    // first completed Q+A as "old history" and skips it during baselining.
+    // A short-lived hash persists across that navigation in this SAME tab.
+    function restoreSubmittedQuestion() {
+      if (selectors.platform !== "chatgpt") return;
+      try {
+        const json = sessionStorage.getItem(CHATGPT_SEND_SESSION_KEY);
+        if (!json) return;
+        const entry = JSON.parse(json);
+        const now = Date.now();
+        if (!entry || typeof entry.key !== "string" || !entry.key ||
+            !Number.isFinite(entry.at) || now < entry.at ||
+            now - entry.at >= SUBMISSION_INTENT_TTL_MS) {
+          sessionStorage.removeItem(CHATGPT_SEND_SESSION_KEY);
+          return;
+        }
+        state.submittedQuestions.push({ key: entry.key, at: entry.at });
+        dbg("submission-restored", "recent ChatGPT Send across navigation");
+      } catch (error) {
+        // Browsers with blocked web storage still use the current page's
+        // in-memory Send marker, without affecting Gemini or other providers.
+        dbg("submission-storage-unavailable", error?.name || "storage");
+      }
+    }
+
+    function consumeSubmittedQuestion(question) {
+      if (selectors.platform !== "chatgpt") return;
+      const key = submissionKey(question);
+      state.submittedQuestions = state.submittedQuestions.filter((x) => x.key !== key);
+      try {
+        const raw = sessionStorage.getItem(CHATGPT_SEND_SESSION_KEY);
+        const data = raw ? JSON.parse(raw) : null;
+        if (data?.key === key) sessionStorage.removeItem(CHATGPT_SEND_SESSION_KEY);
+      } catch { /* web storage unavailable */ }
+    }
+
     function markSubmittedQuestion(question) {
       const raw = normalize(question);
       const key = submissionKey(raw);
@@ -148,6 +189,12 @@
       state.submittedQuestions.push({ key, at: now });
       if (state.submittedQuestions.length > 8) state.submittedQuestions.shift();
       dbg("submission-observed", `q=${raw.length}c`);
+      try {
+        sessionStorage.setItem(CHATGPT_SEND_SESSION_KEY, JSON.stringify({ key, at: now }));
+        dbg("submission-saved", "fingerprint persisted in this ChatGPT tab");
+      } catch (error) {
+        dbg("submission-storage-unavailable", error?.name || "storage");
+      }
     }
 
     function isRecentlySubmitted(question, idx, lastIdx, now) {
@@ -236,6 +283,7 @@
           return;
         }
         remember(fp);
+        consumeSubmittedQuestion(pair.question);
         if (resp.queued) dbg("send-ok", "queued (API offline)");
         else if (resp.duplicate) dbg("send-ok", "duplicate");
         else dbg("send-ok", "accepted");
@@ -437,6 +485,10 @@
     // user clicking Send in ChatGPT. Do not allow a normal reload to import
     // an entire existing conversation.
     globalThis.TFCapture.markSubmittedQuestion = markSubmittedQuestion;
+
+    // Restore before the very first scan, so an already-complete first
+    // exchange on the new ChatGPT document is not treated as history.
+    restoreSubmittedQuestion();
 
     const observer = new MutationObserver(schedule);
     observer.observe(document.documentElement, {
