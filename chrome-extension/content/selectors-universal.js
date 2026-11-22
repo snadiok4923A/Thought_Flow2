@@ -62,8 +62,8 @@
   // accepting the first nonempty selector strategy (which could return only
   // a user message). Preserve Gemini/ChatGPT's precise native text when valid.
   function select() {
-    const nativeRows = safeRead(primary);
-    const genericRows = fallback === primary ? [] : safeRead(fallback);
+    const nativeRows = primary === fallback ? [] : safeRead(primary);
+    const genericRows = safeRead(fallback);
     const nativePairs = pairCount(nativeRows);
     const genericPairs = pairCount(genericRows);
 
