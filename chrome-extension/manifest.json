@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Opt-in universal Q+A capture for supported AI chat websites, with one shared capture engine and conservative fallback.",
   "permissions": [
     "storage",
