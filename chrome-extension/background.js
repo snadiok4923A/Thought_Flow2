@@ -235,7 +235,7 @@ async function ensureChatGPTCapture(tabId) {
     target: { tabId },
     world: "ISOLATED",
     func: () => ({
-      ready: !!(globalThis.__tfChatGPTCaptureStarted &&
+      ready: !!(globalThis.__tfUniversalCaptureStarted &&
         globalThis.TF_SELECTORS?.collectMessages &&
         globalThis.TFCapture?.start),
       selectors: !!globalThis.TF_SELECTORS?.collectMessages,
@@ -250,8 +250,10 @@ async function ensureChatGPTCapture(tabId) {
     files: [
       "utils/debug.js",
       "content/capture-core.js",
+      "content/selectors-generic.js",
       "content/selectors-chatgpt.js",
-      "content/chatgpt.js",
+      "content/selectors-universal.js",
+      "content/universal.js",
     ],
   });
   dbg("chatgpt-capture-repaired", status?.selectors ? "capture init" : "selectors + capture");
