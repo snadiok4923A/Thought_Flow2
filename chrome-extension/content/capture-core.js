@@ -67,13 +67,6 @@
     );
   }
 
-  // Stable across a streaming response's many partial versions. Unlike the
-  // delivery fingerprint, it intentionally excludes the assistant text.
-  // Distinct repeated questions in one chat have distinct turn indices.
-  function turnFingerprint(platform, convId, p, index) {
-    return hash([platform, convId || "", index, normalize(p.question)].join("\u0000"));
-  }
-
   function start(selectors) {
     if (!selectors || typeof selectors.collectMessages !== "function") return;
     if (!selectors.isSupportedPage()) return;
@@ -142,14 +135,7 @@
     // only deliberate Send/Enter actions, and permit just the LAST matching
     // Q+A to bypass that initial baseline.
     function submissionKey(value) {
-      const normalized = normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-      if (!normalized) return "";
-      let hash = 2166136261;
-      for (let i = 0; i < normalized.length; i++) {
-        hash ^= normalized.charCodeAt(i);
-        hash = Math.imul(hash, 16777619);
-      }
-      return normalized.length + ":" + (hash >>> 0).toString(36);
+      return normalize(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
     }
 
     function markSubmittedQuestion(question) {
@@ -162,13 +148,6 @@
       state.submittedQuestions.push({ key, at: now });
       if (state.submittedQuestions.length > 8) state.submittedQuestions.shift();
       dbg("submission-observed", `q=${raw.length}c`);
-      // The page can reload while ChatGPT creates /c/<id>. Persist only the
-      // key in MV3 session storage, not the question text.
-      try {
-        chrome.runtime.sendMessage({ type: "TF_CHATGPT_SUBMISSION", key }, () => {
-          void chrome.runtime.lastError;
-        });
-      } catch { /* normal local marker still covers SPA navigation */ }
     }
 
     function isRecentlySubmitted(question, idx, lastIdx, now) {
@@ -226,7 +205,7 @@
       return { pairs, msgCount: msgs.length };
     }
 
-    function send(pair, fp, convId, turnKey) {
+    function send(pair, fp, convId) {
       // Never mark a pair as "seen" before the server durably accepts (or
       // queues, or definitively rejects) it — otherwise a transient drop
       // (website panel OFF, network blip) would lose the answer forever.
@@ -268,7 +247,6 @@
         answer: pair.answer,
         messageIds: [pair.qid, pair.aid].filter(Boolean),
         fingerprint: fp,
-        turnKey,
         // direction + parentNodeId are intentionally omitted: the server fills
         // them from the website session (panel/popup), which owns that state.
       };
@@ -309,9 +287,7 @@
         const baseStabilityMs = state.settings.stabilityMs || DEFAULT_STABILITY_MS;
         const stabilityMs = selectors.platform === "chatgpt"
           ? Math.max(4500, baseStabilityMs)
-          : selectors.platform === "gemini"
-            ? Math.max(5500, baseStabilityMs)
-            : baseStabilityMs;
+          : baseStabilityMs;
         const now = Date.now();
 
         // Throttled scan heartbeat — only when the observable state changes.
@@ -333,7 +309,6 @@
 
         pairs.forEach((p, idx) => {
           const fp = pairFingerprint(selectors.platform, state.convId, p);
-          const turnKey = turnFingerprint(selectors.platform, state.convId, p, idx);
           // Do NOT discard questions originating in Notes. They must go
           // through the normal, proven Q+A collector. The background router
           // recognizes this explicit Notes question and routes its answer
@@ -342,7 +317,7 @@
             isPendingNotesQuestion(p.question);
           const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
           if (state.seen.has(fp)) {
-            state.stats.delete(turnKey);
+            state.stats.delete(fp);
             return;
           }
           // A send is already in flight for this pair — wait for its response.
@@ -361,11 +336,11 @@
           }
 
           const sig = hash(normalize(p.question) + "\u0001" + normalize(p.answer));
-          let st = state.stats.get(turnKey);
+          let st = state.stats.get(fp);
           if (!st || st.lastSig !== sig) {
             const first = !st;
             st = { lastSig: sig, stableSince: now };
-            state.stats.set(turnKey, st);
+            state.stats.set(fp, st);
             if (first && p.answer) {
               dbg("answer-seen", `q=${p.question.length}c a=${p.answer.length}c (waiting for completion)`);
             }
@@ -387,16 +362,16 @@
             const inFlight = streaming && idx === lastIdx;
             if (!inFlight) {
               remember(fp);
-              state.stats.delete(turnKey);
+              state.stats.delete(fp);
               dbg("baseline-skip", `q=${p.question.length}c`);
             }
             return;
           }
 
           if (settled) {
-            state.stats.delete(turnKey);
+            state.stats.delete(fp);
             if (streaming && stuckStreaming) dbg("streaming-override", "indicator stuck — text static, capturing");
-            send(p, fp, state.convId, turnKey);
+            send(p, fp, state.convId);
           }
           // else: still streaming or text still changing → wait.
         });
@@ -451,9 +426,8 @@
       const pair = pairs[pairs.length - 1];
       if (pair && noteQuestionKey(pair.question) === key) {
         const fp = pairFingerprint(selectors.platform, state.convId, pair);
-        const turnKey = turnFingerprint(selectors.platform, state.convId, pair, pairs.length - 1);
         state.seen.delete(fp);
-        state.stats.delete(turnKey);
+        state.stats.delete(fp);
         state.retryAfter.delete(fp);
       }
       schedule();
@@ -463,31 +437,6 @@
     // user clicking Send in ChatGPT. Do not allow a normal reload to import
     // an entire existing conversation.
     globalThis.TFCapture.markSubmittedQuestion = markSubmittedQuestion;
-
-    // A full ChatGPT document replacement destroys local variables. Rehydrate
-    // the latest explicitly submitted question from the background worker.
-    // If it already got baseline-skipped while loading, unlock only its
-    // last matching Q+A and rescan. Never import unrelated old messages.
-    if (selectors.platform === "chatgpt") {
-      try {
-        chrome.runtime.sendMessage({ type: "TF_CHATGPT_SUBMISSION_GET" }, (result) => {
-          if (chrome.runtime.lastError || !result?.key ||
-              typeof result.at !== "number" ||
-              Date.now() - result.at > SUBMISSION_INTENT_TTL_MS) return;
-          state.submittedQuestions.push({ key: result.key, at: result.at });
-          const { pairs } = collectPairs();
-          const index = pairs.length - 1;
-          const latest = pairs[index];
-          if (latest && submissionKey(latest.question) === result.key) {
-            const fp = pairFingerprint(selectors.platform, state.convId, latest);
-            state.seen.delete(fp);
-            state.stats.delete(turnFingerprint(selectors.platform, state.convId, latest, index));
-            dbg("submission-unlocked", `q=${latest.question.length}c`);
-          }
-          schedule();
-        });
-      } catch { /* ignore if extension was reloaded */ }
-    }
 
     const observer = new MutationObserver(schedule);
     observer.observe(document.documentElement, {
