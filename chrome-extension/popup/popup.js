@@ -321,7 +321,9 @@ async function runDiagnostics() {
     // ThoughtFlow is open; it does not mean that the AI page was detected.
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab && typeof tab.id === "number" && /^https:\/\//.test(tab.url || "")) {
+      const isAI = KNOWN_PLATFORMS.some(([re]) => re.test(tab?.url || "")) ||
+        (activeAIChatTab && activeAIChatTab.tabId === tab?.id);
+      if (tab && isAI && typeof tab.id === "number") {
         const detector = await chrome.tabs.sendMessage(tab.id, {
           type: "TF_AI_DETECTOR_STATUS",
         });
