@@ -719,7 +719,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
-  await TFApi.setSettings({}); // seed defaults
+  // Even if settings seeding fails temporarily, do not abort tab repair.
+  try {
+    await TFApi.setSettings({}); // seed defaults
+  } catch (error) {
+    dbg("settings-init-failed", error?.message || "defaults unavailable");
+  }
   dbg("background", "installed");
   heartbeat();
   // On update, users may already have active Gemini/ChatGPT/other AI tabs.
