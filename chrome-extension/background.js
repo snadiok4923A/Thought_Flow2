@@ -145,6 +145,33 @@ async function findThoughtFlowTab() {
   }
 }
 
+// A bridge that holds the message port open for a page ack must never hang the
+// service worker (or the content script's in-flight pair) indefinitely.
+function sendToTabWithTimeout(tabId, message, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ __timeout: true });
+    }, timeoutMs);
+    chrome.tabs
+      .sendMessage(tabId, message)
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ __error: error });
+      });
+  });
+}
+
 async function deliverDirect(payload) {
   const tab = await findThoughtFlowTab();
   if (!tab || typeof tab.id !== "number") return { delivered: false, reason: "website-off" };
@@ -152,16 +179,26 @@ async function deliverDirect(payload) {
   if (!bridge.ok) return { delivered: false, reason: "bridge-unavailable", detail: bridge.reason };
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "TF_CAPTURE_DIRECT",
-      requestId,
-      payload,
-    });
-    if (!result || !result.received) return { delivered: false, reason: "website-off" };
+    const result = await sendToTabWithTimeout(
+      tab.id,
+      { type: "TF_CAPTURE_DIRECT", requestId, payload },
+      12000
+    );
+    if (result && result.__timeout) {
+      dbg("direct-timeout", "bridge did not acknowledge within 12s");
+      return { delivered: false, reason: "bridge-timeout" };
+    }
+    if (result && result.__error) {
+      dbg("direct-error", result.__error.message || "no bridge");
+      return { delivered: false, reason: "bridge-unavailable" };
+    }
+    if (!result || !result.received) {
+      return { delivered: false, reason: (result && result.reason) || "app-unavailable" };
+    }
     return { delivered: true, result };
   } catch (err) {
     dbg("direct-error", (err && err.message) || "no bridge");
-    return { delivered: false, reason: "website-off" };
+    return { delivered: false, reason: "bridge-unavailable" };
   }
 }
 
@@ -174,16 +211,17 @@ async function handleCapture(payload) {
 
   const direct = await deliverDirect(payload);
   if (!direct.delivered) {
-    // No ThoughtFlow tab (or bridge not ready) — drop; the content script
-    // retries after its cooldown, so opening the website promptly still works.
-    dbg("reject", "no ThoughtFlow tab open (direct)");
-    return { drop: true, reason: "website-off" };
+    // Transient (no tab, blocked bridge, or the page never acked). Report the
+    // REAL reason so diagnostics are actionable; the content script retries
+    // after its cooldown so opening the website promptly still works.
+    dbg("reject", direct.reason || "website-off");
+    return { drop: true, reason: direct.reason || "website-off", detail: direct.detail };
   }
   const r = direct.result || {};
-  if (r.created || r.duplicate) {
-    dbg("direct-ok", r.duplicate ? "duplicate acknowledged" : "node created");
-    if (!r.duplicate) await bumpCounter();
-    return { accepted: true, duplicate: !!r.duplicate };
+  if (r.created || r.updated || r.duplicate) {
+    dbg("direct-ok", r.created ? "node created" : r.updated ? "node updated" : "duplicate acknowledged");
+    if (r.created) await bumpCounter();
+    return { accepted: true, duplicate: !!r.duplicate, updated: !!r.updated };
   }
   // Tab received it but the website dropped it (panel OFF / no start node /
   // no board open). Transient — content script retries after cooldown.

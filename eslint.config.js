@@ -5,7 +5,8 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // Nested worktree checkouts are not part of this lint target.
+  globalIgnores(['dist', '.kilo']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

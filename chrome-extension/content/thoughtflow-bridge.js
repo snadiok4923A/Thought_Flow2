@@ -23,7 +23,25 @@
 document.documentElement.setAttribute("data-thoughtflow-bridge", "ready");
 window.postMessage({ source: "thoughtflow-bridge-ready" }, "*");
 
-const pending = new Map(); // requestId -> sendResponse
+// The page ack must be bounded: if the React app has not mounted its listener
+// (reloading, wrong route, crashed render) the port would otherwise stay open
+// forever and the content script would wait on an in-flight pair.
+const ACK_TIMEOUT_MS = 8000;
+const pending = new Map(); // requestId -> { sendResponse, timer }
+
+function awaitAck(requestId, sendResponse) {
+  const timer = setTimeout(() => {
+    const entry = pending.get(requestId);
+    if (!entry) return;
+    pending.delete(requestId);
+    try {
+      entry.sendResponse({ received: false, reason: "app-timeout" });
+    } catch {
+      /* port already closed */
+    }
+  }, ACK_TIMEOUT_MS);
+  pending.set(requestId, { sendResponse, timer });
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
@@ -40,7 +58,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "TF_CAPTURE_DIRECT") {
     const requestId = msg.requestId || String(Date.now());
-    pending.set(requestId, sendResponse);
+    awaitAck(requestId, sendResponse);
     window.postMessage(
       { source: "thoughtflow-capture-direct", requestId, payload: msg.payload },
       "*"
@@ -50,13 +68,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "TF_GET_PANEL_STATE") {
     const requestId = msg.requestId || `panel-${Date.now()}`;
-    pending.set(requestId, sendResponse);
+    awaitAck(requestId, sendResponse);
     window.postMessage({ source: "thoughtflow-panel-query", requestId }, "*");
     return true;
   }
   if (msg.type === "TF_SET_DIRECTION") {
     const requestId = msg.requestId || `dir-${Date.now()}`;
-    pending.set(requestId, sendResponse);
+    awaitAck(requestId, sendResponse);
     window.postMessage(
       { source: "thoughtflow-set-direction", requestId, direction: msg.direction },
       "*"
@@ -69,10 +87,15 @@ window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const data = event.data;
   if (!data || data.source !== "thoughtflow-capture-ack") return;
-  const respond = pending.get(data.requestId);
-  if (respond) {
+  const entry = pending.get(data.requestId);
+  if (entry) {
     pending.delete(data.requestId);
-    respond(data.result || { received: true });
+    clearTimeout(entry.timer);
+    try {
+      entry.sendResponse(data.result || { received: true });
+    } catch {
+      /* port closed by the sender */
+    }
   }
 });
 

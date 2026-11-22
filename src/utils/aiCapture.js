@@ -13,6 +13,8 @@ const DEFAULT_TOKEN = ENV_TOKEN || "tf-local-capture-token";
 const CFG_KEY = "thoughtflow-ai-capture-cfg";
 const APPLIED_KEY = "thoughtflow-ai-applied";
 const APPLIED_CAP = 400;
+const DIRECT_TURNS_KEY = "thoughtflow-ai-direct-turns";
+const DIRECT_TURNS_CAP = 400;
 
 export function getCaptureConfig() {
   try {
@@ -130,6 +132,48 @@ export function normalizeCaptureDirection(dir) {
 
 export function toTreeDirection(dir) {
   return normalizeCaptureDirection(dir) === "right" ? "right" : "down";
+}
+
+// ---- Direct capture turn ledger --------------------------------------------
+// The extension identifies a turn by conversation + question (never by answer
+// text or DOM ids), so a streamed answer that keeps growing arrives as the
+// SAME turn. This ledger remembers what was written to which node, letting a
+// longer final answer update that node instead of creating a second one.
+export function loadDirectTurnLedger() {
+  try {
+    const raw = localStorage.getItem(DIRECT_TURNS_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj && typeof obj === "object" && !Array.isArray(obj) ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveDirectTurnLedger(map) {
+  try {
+    const entries = Object.entries(map);
+    const trimmed =
+      entries.length > DIRECT_TURNS_CAP ? Object.fromEntries(entries.slice(-DIRECT_TURNS_CAP)) : map;
+    localStorage.setItem(DIRECT_TURNS_KEY, JSON.stringify(trimmed));
+  } catch {
+    /* private mode / quota — in-memory ledger still guards this session */
+  }
+}
+
+// create → new node; update → same node, answer grew while streaming;
+// duplicate → already captured (or the user edited the note — never overwrite).
+export function decideDirectCapture({ question, answer, ledgerEntry, nodeNotes }) {
+  if (!ledgerEntry || !ledgerEntry.nodeId || typeof nodeNotes !== "string") {
+    return { action: "create" };
+  }
+  if (ledgerEntry.question === question && ledgerEntry.answer === answer) {
+    return { action: "duplicate" };
+  }
+  const expected = buildCaptureNoteHtml({
+    question: ledgerEntry.question,
+    answer: ledgerEntry.answer,
+  });
+  return nodeNotes === expected ? { action: "update" } : { action: "duplicate" };
 }
 
 // ---- Applied-item ledger ---------------------------------------------------

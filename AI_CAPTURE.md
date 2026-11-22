@@ -1,3 +1,51 @@
+## Turn identity, complete answers and bounded delivery — v1.2.2
+
+**Observed:** a ChatGPT node was sometimes created with a short fragment,
+sometimes the answer was truncated, and `send-ok — accepted` could appear in
+Diagnostics without a new node. Gemini was unaffected.
+
+Three separate defects were found and fixed in the shared pipeline (not in a
+site-specific adapter):
+
+1. **Fingerprints changed while the answer streamed.** The dedupe key hashed
+   the DOM message ids and the answer text. A re-rendered message looked like
+   a new turn, and an answer that grew after an early capture created a
+   *second* node instead of updating the first. `pairFingerprint()` in
+   `content/capture-core.js` now hashes platform + conversation + question +
+   occurrence of that question. Ids and answer text are no longer part of a
+   turn's identity. The engine remembers the delivered answer per fingerprint
+   and re-sends only when that answer grows; the website updates the existing
+   node's note (`decideDirectCapture` in `src/utils/aiCapture.js`) and leaves
+   a note alone when its text no longer matches what capture wrote (manual
+   edits are never overwritten).
+2. **Split assistant rows overwrote each other.** `collectPairs()` kept only
+   the last assistant row of a turn, so a reply rendered as a markdown body
+   plus a separate code block lost everything but the last part. Rows are now
+   merged (containment-aware, otherwise joined with a blank line).
+3. **A lost page ack hung forever.** `content/thoughtflow-bridge.js` kept the
+   `chrome.runtime` port open until the React app replied; if the app had not
+   mounted its listener the reply never came, the background's `sendMessage`
+   never settled, and the content script's in-flight pair was never retried.
+   The bridge now fails after 8 s with `app-timeout`, and `background.js`
+   bounds delivery at 12 s (`bridge-timeout`, `bridge-unavailable`). Drop
+   reasons now reach the popup diagnostics instead of being flattened to
+   `website-off`; the website acks `busy`, `no-start-node` and `error`
+   distinctly.
+
+Regression tests:
+
+```bash
+node chrome-extension/test/capture-turn-identity.mjs
+node chrome-extension/test/direct-turn-decision.mjs
+node chrome-extension/test/bridge-ack-timeout.mjs
+node chrome-extension/test/chatgpt-full-answer-quality.mjs
+node chrome-extension/test/gemini-clean-capture.mjs
+```
+
+Live-browser verification is still required for the DOM itself: ask ChatGPT a
+question whose answer includes a code block, and confirm the node's note ends
+with the true final line. Gemini's native adapter is untouched.
+
 ## ChatGPT full-answer capture quality — experimental v1.2.1
 
 **Observed:** The user asked ChatGPT **"Another"**, which returned a long

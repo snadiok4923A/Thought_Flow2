@@ -104,7 +104,7 @@
       const nativeLast = latestPair(nativeRows);
       const genericLast = latestPair(genericRows);
       let fallbackMode = "";
-      try { fallbackMode = fallback?.probeStrategy?.() || ""; } catch {}
+      try { fallbackMode = fallback?.probeStrategy?.() || ""; } catch { fallbackMode = ""; }
       if (nativeLast && genericLast &&
           questionKey(nativeLast.question) === questionKey(genericLast.question) &&
           (fallbackMode === "roles" || fallbackMode === "turns") &&

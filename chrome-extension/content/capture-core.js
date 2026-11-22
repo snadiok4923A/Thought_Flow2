@@ -65,9 +65,14 @@
     );
   }
 
+  // Stable turn identity: the same question at the same position in the same
+  // conversation is ONE turn for its whole lifetime. DOM message ids are
+  // remounted by the chat UIs and the answer grows while streaming, so neither
+  // may be part of the identity — that used to create duplicate nodes and
+  // stranded partial answers.
   function pairFingerprint(platform, convId, p) {
     return hash(
-      [platform, convId || "", p.qid || "", p.aid || "", normalize(p.question), normalize(p.answer)].join("\u0000")
+      [platform, convId || "", String(p.qOccurrence || 0), normalize(p.question)].join("\u0000")
     );
   }
 
@@ -93,6 +98,7 @@
       waitingLogged: new Set(),
       inflight: new Set(), // sends awaiting a server response
       retryAfter: new Map(), // fp -> epoch ms before a dropped send may be retried
+      sentAnswers: new Map(), // fp -> answer signature already delivered
       wakeTimer: null, // precise wake-up when the next settle/retry deadline is known
     };
 
@@ -235,20 +241,46 @@
     }
 
     // ---- pairing: user → assistant, in document order ----
+    // One assistant reply can be rendered as several rows (a markdown body plus
+    // a separate code block, or a turn re-mounted in parts). Keeping only the
+    // last row truncated the saved answer — merge the rows instead.
+    function mergeAssistantText(previous, next) {
+      const aRaw = String(previous || "");
+      const bRaw = String(next || "");
+      if (!aRaw.trim()) return bRaw;
+      if (!bRaw.trim()) return aRaw;
+      const a = aRaw.trim();
+      const b = bRaw.trim();
+      if (a === b) return aRaw;
+      if (a.includes(b)) return aRaw; // shorter re-render of the same body
+      if (b.includes(a)) return bRaw; // the same body grew in place
+      return a + "\n\n" + b; // reply split across containers
+    }
+
     function collectPairs() {
       const msgs = selectors.collectMessages().filter((m) => m && m.text);
       const pairs = [];
+      // Occurrence of an identical question within the conversation keeps
+      // repeated questions separate while staying stable under virtualization.
+      const occurrences = new Map();
       let cur = null;
+      const finish = () => {
+        if (cur && cur.question && cur.answer) pairs.push(cur);
+        cur = null;
+      };
       for (const m of msgs) {
         if (m.role === "user") {
-          if (cur && cur.question && cur.answer) pairs.push(cur);
-          cur = { question: m.text, qid: m.id || "", answer: "", aid: "" };
+          finish();
+          const qKey = normalize(m.text).toLowerCase();
+          const occurrence = occurrences.get(qKey) || 0;
+          occurrences.set(qKey, occurrence + 1);
+          cur = { question: m.text, qid: m.id || "", answer: "", aid: "", qOccurrence: occurrence };
         } else if (m.role === "assistant" && cur) {
-          cur.answer = m.text;
+          cur.answer = mergeAssistantText(cur.answer, m.text);
           cur.aid = m.id || "";
         }
       }
-      if (cur && cur.question && cur.answer) pairs.push(cur);
+      finish();
       return { pairs, msgCount: msgs.length };
     }
 
@@ -283,6 +315,7 @@
           return;
         }
         remember(fp);
+        state.sentAnswers.set(fp, hash(normalize(pair.answer)));
         consumeSubmittedQuestion(pair.question);
         if (resp.queued) dbg("send-ok", "queued (API offline)");
         else if (resp.duplicate) dbg("send-ok", "duplicate");
@@ -323,6 +356,7 @@
           state.convId = convId;
           state.baselineDone = false;
           state.stats.clear();
+          state.sentAnswers.clear();
         }
 
         const { pairs, msgCount } = collectPairs();
@@ -374,9 +408,16 @@
           const pendingNote = selectors.platform === "chatgpt" &&
             isPendingNotesQuestion(p.question);
           const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
+          const answerSig = hash(normalize(p.answer));
+          const sentSig = state.sentAnswers.get(fp);
           if (state.seen.has(fp)) {
-            state.stats.delete(fp);
-            return;
+            // An answer that grew after an earlier capture is the SAME turn,
+            // not a new one: resend it (once settled) so the app updates its
+            // existing node rather than creating a duplicate.
+            if (!sentSig || sentSig === answerSig) {
+              state.stats.delete(fp);
+              return;
+            }
           }
           // A send is already in flight for this pair — wait for its response.
           if (state.inflight.has(fp)) return;

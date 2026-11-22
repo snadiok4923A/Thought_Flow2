@@ -50,7 +50,10 @@ import {
   normalizeCaptureDirection,
   toTreeDirection,
   loadAppliedCaptureMap,
-  saveAppliedCaptureMap
+  saveAppliedCaptureMap,
+  loadDirectTurnLedger,
+  saveDirectTurnLedger,
+  decideDirectCapture
 } from './utils/aiCapture';
 
 // Content scripts have an isolated JS global; the DOM attribute is shared.
@@ -670,6 +673,12 @@ export default function ThoughtFlowApp() {
   const appliedCaptureMapRef = useRef(null);
   if (appliedCaptureMapRef.current === null) {
     appliedCaptureMapRef.current = loadAppliedCaptureMap();
+  }
+  // direct fingerprint → { nodeId, question, answer } so a streamed answer can
+  // update its existing node instead of creating another one.
+  const directTurnLedgerRef = useRef(null);
+  if (directTurnLedgerRef.current === null) {
+    directTurnLedgerRef.current = loadDirectTurnLedger();
   }
   // Acks that failed (network blip) — retried every poll; items are NEVER
   // re-applied while their node already exists.
@@ -1559,20 +1568,46 @@ export default function ThoughtFlowApp() {
       let parent = parentId ? findNodeById(tree, parentId) : null;
       if (!parent) {
         updateAiCapture({ message: 'Select a node to start AI Capture.' });
-        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        ack(requestId, { received: true, created: false, reason: 'no-start-node' });
         return;
       }
       if (aiApplyingRef.current) {
-        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        ack(requestId, { received: true, created: false, reason: 'busy' });
         return;
       }
       aiApplyingRef.current = true;
       try {
         // Deduplicate BEFORE adding a node or recording an undo snapshot.
         const appliedMap = appliedCaptureMapRef.current;
+        const ledger = directTurnLedgerRef.current;
         const fp = directCaptureKey(payload, question, answer);
-        if (appliedMap[fp]) {
+        const entry = ledger[fp];
+        const existingNode = entry?.nodeId ? findNodeById(tree, entry.nodeId) : null;
+        const decision = decideDirectCapture({
+          question,
+          answer,
+          ledgerEntry: entry,
+          nodeNotes: existingNode ? String(existingNode.notes ?? '') : null,
+        });
+        if (decision.action === 'duplicate') {
           ack(requestId, { received: true, created: false, duplicate: true });
+          return;
+        }
+        if (decision.action === 'update') {
+          // Same conversation turn, longer final answer: update the node the
+          // first capture created. Never add a second node for one turn.
+          flushPendingTextEditHistory();
+          pushSnapshotToUndo(cloneMindMapState(tree, collapsedNodeIds));
+          const updatedTree = updateNodeInTree(tree, existingNode.id, {
+            notes: buildCaptureNoteHtml({ source: payload.source || 'manual', question, answer }),
+          });
+          ledger[fp] = { nodeId: existingNode.id, question, answer };
+          saveDirectTurnLedger(ledger);
+          treeDataRef.current = updatedTree;
+          setTreeData(updatedTree);
+          setHasUnsavedChanges(true);
+          console.log(`[AI Capture] Direct node updated with the complete answer: ${existingNode.id}`);
+          ack(requestId, { received: true, created: false, updated: true });
           return;
         }
         const direction = normalizeCaptureDirection(state.direction);
@@ -1597,6 +1632,9 @@ export default function ThoughtFlowApp() {
         // delivery of the same pair never creates a second node.
         appliedMap[fp] = newNode.id;
         saveAppliedCaptureMap(appliedMap);
+        ledger[fp] = { nodeId: newNode.id, question, answer };
+        saveDirectTurnLedger(ledger);
+        treeDataRef.current = updatedTree;
         setTreeData(updatedTree);
         setHasUnsavedChanges(true);
         updateAiCapture({ message: '', captured: (aiCaptureStateRef.current.captured || 0) + 1 });
@@ -1604,18 +1642,22 @@ export default function ThoughtFlowApp() {
         ack(requestId, { received: true, created: true });
       } catch (err) {
         console.error('[AI Capture] Direct node creation failed:', err && err.message, err);
-        ack(requestId, { received: true, created: false, reason: 'website-off' });
+        ack(requestId, { received: true, created: false, reason: 'error' });
       } finally {
         aiApplyingRef.current = false;
       }
     };
     window.addEventListener('message', onMessage);
     // Bridge present = extension installed + tab open. Show Connected Yes
-    // immediately; the server poller below must not overwrite it to No.
-    if (hasDirectBridge()) {
-      updateAiCapture({ connected: true });
-    }
-    return () => window.removeEventListener('message', onMessage);
+    // immediately (deferred, so the effect itself performs no synchronous
+    // state update); the server poller below must not overwrite it to No.
+    const bridgeTimer = hasDirectBridge()
+      ? setTimeout(() => updateAiCapture({ connected: true }), 0)
+      : null;
+    return () => {
+      if (bridgeTimer) clearTimeout(bridgeTimer);
+      window.removeEventListener('message', onMessage);
+    };
   }, [flushPendingTextEditHistory, pushSnapshotToUndo, collapsedNodeIds, updateAiCapture]);
 
   // Poll the capture backend: adopt shared-session changes (popup direction,
