@@ -85,7 +85,7 @@ async function detectPlatform() {
     tab && typeof tab.id === "number");
   const custom = eligible && !on;
   activeAIChatTab = custom ? { tabId: tab.id, host: url.hostname,
-    originPattern: url.origin + "/*" } : null;
+    originPattern: "https://" + url.hostname + "/*" } : null;
   $("enableSiteRow").hidden = !custom;
   if (custom) {
     let enabled = false;
