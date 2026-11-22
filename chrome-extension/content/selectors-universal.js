@@ -110,10 +110,14 @@
     collectMessages() { return current().rows; },
     probeStrategy() { return last?.mode || current().mode; },
     isStreaming() {
-      // Native selectors are most reliable for supported sites. Generic
-      // status markers are a fallback for unknown/opted-in chat websites.
+      // Do not let generic loading indicators hold up an otherwise valid
+      // Gemini/ChatGPT native capture. Use only the indicator belonging to
+      // whichever extractor supplied the current transcript.
       try {
-        return !!(primary?.isStreaming?.() || fallback?.isStreaming?.());
+        if (last?.mode === "native" || last?.mode === "native-partial") {
+          return !!primary?.isStreaming?.();
+        }
+        return !!fallback?.isStreaming?.();
       } catch { return false; }
     },
   };
