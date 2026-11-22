@@ -1,3 +1,93 @@
+## Universal AI chat capture — experimental v1.2.0
+
+ThoughtFlow now has **one shared capture engine** and **one universal message
+detector**. Rather than having unrelated feature implementations for ChatGPT,
+Gemini and every other provider, the detector prefers a native DOM adapter
+when it yields a complete Q+A pair and falls back to generic role-marked or
+turn-container extraction when that adapter is incomplete. All providers
+then use the same core for Q+A pairing, streaming/stability, deduplication,
+sending and mind-map node creation.
+
+- **Bundled AI hosts** (including ChatGPT, Gemini, DeepSeek, Copilot,
+  Claude, Arena, Grok, Perplexity and others in manifest.json) are enabled
+  on the supported hosts by the usual explicit extension installation
+  permissions.
+- **Another HTTPS AI chat website:** open that site, click the ThoughtFlow
+  extension popup, then click **Enable capture on this site**. The browser
+  requests permission **only for that specific website** and registers
+  the same universal scripts for current and future conversations. You
+  can revoke it later from the browser's extension Site access settings.
+- **Unknown chat UIs:** automatic capture is only attempted when reliable
+  user/assistant role markers are found. Arbitrary prose blocks are not
+  guessed to be a Q+A conversation. Unsupported shadow DOM, canvas chats,
+  iframe content, unusual layouts, or changed markup may require an
+  adapter or Quick add. Automatic support for literally every chatbot
+  cannot be guaranteed.
+- **Notes Ask ChatGPT:** this existing *outbound* feature is still
+  ChatGPT-specific. Universal **inbound Q+A capture** is separate; no
+  hidden API request or automatic submission to other AI accounts is added.
+
+### Why both Gemini and ChatGPT sometimes stopped after Extension reload
+
+An existing tab can outlive a browser extension update. In that situation
+the popup can say Capture ON while the AI tab has **no active content script**.
+v1.2.0 repairs the same universal capture scripts on already-open supported
+AI tabs after extension installation/update and on tab navigation. Its
+hidden Diagnostics view (Shift-click the popup header logo) now includes
+**AI detector** status, number of extracted messages, number of complete
+Q+A pairs and extraction strategy. This distinguishes "ThoughtFlow bridge
+connected" from "AI chat actually being read."
+
+### Test the experimental branch before merging
+
+To avoid breaking a currently working Gemini version again, first test the
+branch locally **without merging the pull request**. Save or commit any
+uncommitted project edits before switching branches.
+
+```bash
+git fetch origin feature/unified-ai-capture-optin-2026-11-22
+git switch -c universal-test origin/feature/unified-ai-capture-optin-2026-11-22
+```
+
+Reload the unpacked extension in Chrome/Brave, verify version **1.2.0**,
+and refresh the ThoughtFlow, Gemini and ChatGPT tabs. Ask one **new**
+question on Gemini and then on ChatGPT. Check that at least one Q+A is
+captured from each (Notes Ask is a separate test). On DeepSeek or
+Copilot, use another new conversation to verify the generic detector.
+For an unknown AI site, use the popup's opt-in permission control.
+
+When both tests pass, the PR is ready for review and merge. To return to
+the existing main version if needed, run `git switch main`, then reload
+the extension. Branch switching may be blocked by uncommitted changes;
+do **not** use `git reset --hard`.
+
+### Local regression checks
+
+```bash
+node chrome-extension/test/universal-qa-detector.mjs
+node chrome-extension/test/universal-capture-pipeline.mjs
+node chrome-extension/test/optin-site-registration.mjs
+node chrome-extension/test/reload-repairs-ai-tabs.mjs
+node chrome-extension/test/notes-port-routing.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+node chrome-extension/test/gemini-clean-capture.mjs
+```
+
+If capture fails, send Diagnostics for the **AI chatbot tab**:
+`AI detector missing` means scripts are not installed; `msgs=0` or
+`pairs=0` suggests DOM extraction failed; `baseline-skip` means the
+detected Q+A was treated as old; `send-error`, `direct-dropped` or
+`reject` indicate delivery/panel issues. `Connected: Yes` alone is
+not evidence of actual message extraction. These events log counts, not
+raw private conversation text.
+
+**Scope:** v1.2.0 is a universal detector/connection reliability
+foundation. It does not guarantee perfect streaming-duplicate handling
+on every website, nor does it make Notes Ask send prompts to all AI services.
+
+---
+
 # AI Chat Auto Capture
 
 Captures complete **Question + Answer** pairs from AI chat sites in your browser
