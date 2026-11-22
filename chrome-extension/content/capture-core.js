@@ -328,13 +328,13 @@
         const { pairs, msgCount } = collectPairs();
         const streaming = selectors.isStreaming();
         const enabled = state.settings.captureEnabled;
-        // ChatGPT may briefly show a tiny partial reply while its streaming
-        // control disappears/reappears. A 2-second pause was enough to send a
-        // 9-character fragment, then a second 973-character "answer" as a new
-        // node. Keep Gemini and other platforms at their existing settings.
+        // ChatGPT can pause between streamed sections (including code
+        // blocks), and the stop indicator may disappear briefly. Do not
+        // capture a tiny early fragment while the full answer is pending.
+        // Gemini and other platforms keep their existing settings.
         const baseStabilityMs = state.settings.stabilityMs || DEFAULT_STABILITY_MS;
         const stabilityMs = selectors.platform === "chatgpt"
-          ? Math.max(4500, baseStabilityMs)
+          ? Math.max(8000, baseStabilityMs)
           : baseStabilityMs;
         const now = Date.now();
 
@@ -356,6 +356,16 @@
         const lastIdx = pairs.length - 1;
 
         pairs.forEach((p, idx) => {
+          // A common ChatGPT false-positive is a one-word assistant fragment
+          // that merely echoes the question ("Another" → "another") while
+          // a multi-part response is still rendering. Don't mark it seen,
+          // and don't create a node until meaningful assistant text appears.
+          if (selectors.platform === "chatgpt" &&
+              normalize(p.question).toLowerCase() === normalize(p.answer).toLowerCase() &&
+              p.answer.length <= 160) {
+            dbg("answer-echo-wait", `q=${p.question.length}c a=${p.answer.length}c`);
+            return;
+          }
           const fp = pairFingerprint(selectors.platform, state.convId, p);
           // Do NOT discard questions originating in Notes. They must go
           // through the normal, proven Q+A collector. The background router
