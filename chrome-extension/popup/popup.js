@@ -316,6 +316,25 @@ async function runDiagnostics() {
       : d.session && (d.session.rootNodeId || d.session.currentParentNodeId);
     parts.push(hasStart ? "Start node ✓" : "Start node ✗");
     if (d.queue > 0) parts.push(`queued: ${d.queue}`);
+
+    // Health must verify the input side too. "Connected" alone only proves
+    // ThoughtFlow is open; it does not mean that the AI page was detected.
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && typeof tab.id === "number" && /^https:\/\//.test(tab.url || "")) {
+        const detector = await chrome.tabs.sendMessage(tab.id, {
+          type: "TF_AI_DETECTOR_STATUS",
+        });
+        if (detector?.ready) {
+          parts.push(`AI ${detector.platform}: ${detector.messages} msgs, ${detector.pairs} Q+A (${detector.strategy})`);
+        } else {
+          parts.push("AI detector unavailable");
+        }
+      }
+    } catch {
+      parts.push("AI detector missing on this tab — refresh it or enable capture");
+    }
+
     pipe.textContent = (d.gate === "OK" ? "PIPELINE OK — " : `BLOCKED: ${d.gate} — `) + parts.join(" · ");
     pipe.className = "diag-pipeline " + (d.gate === "OK" ? "ok" : "bad");
     renderEvents(d.events);
