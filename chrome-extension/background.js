@@ -225,40 +225,71 @@ function isChatGPTUrl(raw) {
   } catch { return false; }
 }
 
-// The Notes Ask helper was previously injected into already-open ChatGPT
-// tabs WITHOUT the selectors/capture engine. When a browser extension is
-// reloaded, old tabs may not have the declarative content scripts installed.
-// Ensure every prerequisite exists in the same ISOLATED extension world.
-async function ensureChatGPTCapture(tabId) {
-  if (typeof tabId !== "number") throw new Error("Invalid ChatGPT tab.");
-  const probe = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    func: () => ({
-      ready: !!(globalThis.__tfUniversalCaptureStarted &&
-        globalThis.TF_SELECTORS?.collectMessages &&
-        globalThis.TFCapture?.start),
-      selectors: !!globalThis.TF_SELECTORS?.collectMessages,
-    }),
-  });
-  const status = Array.isArray(probe) ? probe[0]?.result : null;
-  if (status?.ready) return { ready: true, repaired: false };
+// Recover the shared capture engine on already-open AI tabs after an
+// extension update/reload. One pipeline handles all supported platforms.
+const AI_GENERIC_HOSTS = new Set([
+  "arena.ai","www.arena.ai","lmarena.ai","www.lmarena.ai",
+  "chat.lmsys.org","grok.com","grok.x.ai","x.ai","claude.ai",
+  "chat.deepseek.com","deepseek.com","www.perplexity.ai","perplexity.ai",
+  "copilot.microsoft.com","www.poe.com","poe.com","you.com","chat.you.com",
+  "duck.ai","meta.ai","www.meta.ai","chat.mistral.ai","chat.qwen.ai",
+  "kimi.com","www.kimi.com","felo.ai","chat.z.ai","chat.minimax.io",
+]);
 
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    files: [
-      "utils/debug.js",
-      "content/capture-core.js",
-      "content/selectors-generic.js",
-      "content/selectors-chatgpt.js",
-      "content/selectors-universal.js",
-      "content/universal.js",
-    ],
-  });
-  dbg("chatgpt-capture-repaired", status?.selectors ? "capture init" : "selectors + capture");
-  return { ready: true, repaired: true };
+function captureFilesForUrl(raw) {
+  let host;
+  try {
+    const url = new URL(raw || "");
+    if (url.protocol !== "https:") return null;
+    host = url.hostname.toLowerCase();
+  } catch { return null; }
+  const base = ["utils/debug.js","content/capture-core.js","content/selectors-generic.js"];
+  if (host === "chatgpt.com" || host === "chat.openai.com") {
+    return [...base,"content/selectors-chatgpt.js",
+      "content/selectors-universal.js","content/universal.js"];
+  }
+  if (host === "gemini.google.com") {
+    return [...base,"content/selectors-gemini.js",
+      "content/selectors-universal.js","content/universal.js"];
+  }
+  if (AI_GENERIC_HOSTS.has(host)) {
+    return [...base,"content/selectors-universal.js","content/universal.js"];
+  }
+  return null; // other hosts must be enabled explicitly via popup
 }
+
+async function ensureAICapture(tab) {
+  const files = captureFilesForUrl(tab?.url);
+  if (!files || typeof tab?.id !== "number") return { ready: false, reason: "unsupported-tab" };
+  try {
+    const probe = await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, world: "ISOLATED",
+      func: () => !!(globalThis.__tfUniversalCaptureStarted &&
+        globalThis.TF_SELECTORS?.collectMessages && globalThis.TFCapture?.start),
+    });
+    if (probe?.[0]?.result === true) return { ready: true, repaired: false };
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id }, world: "ISOLATED", files,
+    });
+    dbg("ai-capture-repaired", "universal detector reinstalled after extension reload");
+    return { ready: true, repaired: true };
+  } catch (error) {
+    dbg("ai-capture-repair-failed", error?.message || "injection failed");
+    return { ready: false, reason: error?.message || "injection failed" };
+  }
+}
+
+async function ensureChatGPTCapture(tabId) {
+  return ensureAICapture({ id: tabId, url: "https://chatgpt.com/" });
+}
+
+// The manifest normally installs scripts on navigation, but an already-open
+// chat can survive an extension reload. Repair it without requiring a reload.
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status === "complete" && captureFilesForUrl(tab?.url || info.url)) {
+    ensureAICapture({ id: tabId, url: tab?.url || info.url }).catch(() => {});
+  }
+});
 
 // The first response only confirms that the question was accepted for
 // delivery. The finished answer returns later in TF_CHATGPT_ASK_RESULT.
@@ -691,6 +722,16 @@ chrome.runtime.onInstalled.addListener(async () => {
   await TFApi.setSettings({}); // seed defaults
   dbg("background", "installed");
   heartbeat();
+  // On update, users may already have active Gemini/ChatGPT/other AI tabs.
+  // Chrome doesn't necessarily reinject declarative content scripts until
+  // those tabs navigate. Repair supported tabs now.
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.all((tabs || []).filter((tab) => captureFilesForUrl(tab.url))
+      .map((tab) => ensureAICapture(tab)));
+  } catch (error) {
+    dbg("ai-capture-repair-failed", error?.message || "tab discovery");
+  }
   try {
     await chrome.action.setBadgeBackgroundColor({ color: "#7c3aed" });
   } catch {
