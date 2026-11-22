@@ -107,13 +107,15 @@ const historic = contentHarness(pair());
 historic.advance(5000);
 assert.equal(historic.forwarded.length, 0);
 
+// ChatGPT's complete-answer stabilization now uses up to an 8-second
+// text-settle window. Tests wait beyond that without changing routing rules.
 // Notes-initiated question in a new/empty conversation IS captured.
 const newNote = contentHarness();
 newNote.context.__tfOutboundQuestions = new Set([QUESTION]);
 newNote.context.TFCapture.allowPendingNoteQuestion(questionKey(QUESTION));
 newNote.messages.push(...pair());
 newNote.trigger();
-newNote.advance(5000);
+newNote.advance(10000);
 assert.equal(newNote.forwarded.length, 1);
 assert.equal(newNote.forwarded[0].type, "TF_TRY_SEND");
 assert.equal(newNote.forwarded[0].payload.question, QUESTION);
@@ -132,7 +134,7 @@ partial.advance(2700);
 assert.equal(partial.forwarded.length, 0, "ChatGPT fragment must not capture at 2 seconds");
 partial.messages[1].text = ANSWER;
 partial.trigger();
-partial.advance(5000);
+partial.advance(10000);
 assert.equal(partial.forwarded.length, 1, "Only the stable full answer must capture");
 assert.equal(partial.forwarded[0].payload.answer, ANSWER);
 
@@ -142,7 +144,7 @@ const navigated = contentHarness(pair());
 navigated.advance(1000);
 assert.equal(navigated.forwarded.length, 0);
 navigated.context.TFCapture.allowPendingNoteQuestion(questionKey(QUESTION));
-navigated.advance(5000);
+navigated.advance(10000);
 assert.equal(navigated.forwarded.length, 1);
 assert.equal(navigated.forwarded[0].payload.answer, ANSWER);
 
@@ -156,7 +158,7 @@ const repeated = contentHarness([
 repeated.advance(1000);
 assert.equal(repeated.forwarded.length, 0);
 repeated.context.TFCapture.allowPendingNoteQuestion(questionKey(QUESTION));
-repeated.advance(5000);
+repeated.advance(10000);
 assert.equal(repeated.forwarded.length, 1);
 assert.equal(repeated.forwarded[0].payload.answer, "NEW answer only");
 
@@ -165,7 +167,7 @@ const captureOff = contentHarness([], false);
 captureOff.context.__tfOutboundQuestions = new Set([QUESTION]);
 captureOff.messages.push(...pair());
 captureOff.trigger();
-captureOff.advance(5000);
+captureOff.advance(10000);
 assert.equal(captureOff.forwarded.length, 1);
 assert.equal(captureOff.forwarded[0].payload.answer, ANSWER);
 

@@ -23,6 +23,25 @@ globalThis.TF_SELECTORS = (function () {
     return (el && el.innerText ? el.innerText : "").trim();
   }
 
+  // One assistant turn can have several markdown/code blocks. Selecting
+  // only its FIRST .markdown misses the rest of the visible answer.
+  // Prefer the complete role-marked body; if only a partial markdown block
+  // is available, use the entire assistant turn when it is substantially
+  // longer (for example, a multi-part Python coding response).
+  function assistantTurnContent(turn) {
+    const roleBody = turn.querySelector('[data-message-author-role="assistant"]');
+    if (roleBody && textOf(roleBody)) {
+      return { el: roleBody, text: textOf(roleBody) };
+    }
+    const markdown = turn.querySelector(".markdown, .prose");
+    const snippet = markdown ? textOf(markdown) : "";
+    const entire = textOf(turn);
+    if (entire.length > snippet.length + 80 && entire.length > snippet.length * 1.5) {
+      return { el: turn, text: entire };
+    }
+    return { el: markdown || turn, text: snippet || entire };
+  }
+
   // Strategy A — data-message-author-role (single container per message)
   function collectByAuthorRole() {
     const nodes = document.querySelectorAll("[data-message-author-role]");
@@ -61,9 +80,8 @@ globalThis.TF_SELECTORS = (function () {
         '[data-testid="conversation-turn-assistant"], [data-testid="conversation-turn-model"]'
       )
       .forEach(function (turn) {
-        // Prefer the markdown body so toolbar button labels are excluded.
-        const body = turn.querySelector(".markdown, [data-message-author-role]") || turn;
-        bucket.push({ el: body, role: "assistant" });
+        const body = assistantTurnContent(turn);
+        bucket.push({ el: body.el, role: "assistant", text: body.text });
       });
 
     // Dedupe overlaps (e.g. an assistant turn that also carries author-role).
@@ -80,7 +98,7 @@ globalThis.TF_SELECTORS = (function () {
       return {
         el: item.el,
         role: item.role,
-        text: textOf(item.el),
+        text: item.text || textOf(item.el),
         id: item.el.getAttribute("data-message-id") || "",
       };
     });
@@ -92,9 +110,10 @@ globalThis.TF_SELECTORS = (function () {
     const bucket = [];
     document.querySelectorAll("main article, article").forEach(function (art) {
       if (art.querySelector("textarea, [contenteditable='true']")) return; // composer
-      const md = art.querySelector(".markdown");
+      const md = art.querySelector(".markdown, .prose");
       if (md) {
-        bucket.push({ el: md, role: "assistant" });
+        const body = assistantTurnContent(art);
+        bucket.push({ el: body.el, role: "assistant", text: body.text });
         return;
       }
       const q = art.querySelector(".whitespace-pre-wrap");
@@ -105,7 +124,7 @@ globalThis.TF_SELECTORS = (function () {
       return {
         el: item.el,
         role: item.role,
-        text: textOf(item.el),
+        text: item.text || textOf(item.el),
         id: item.el.getAttribute("data-message-id") || item.el.id || "",
       };
     });

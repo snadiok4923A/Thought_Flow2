@@ -45,6 +45,27 @@
     }
   }
 
+  // Compare the final aligned user→assistant exchange from two extractors.
+  // A ChatGPT native selector can report a "complete" pair even when its
+  // assistant body is just the first word of a multi-block response.
+  function latestPair(rows) {
+    let question = "";
+    let answer = "";
+    for (const row of rows) {
+      if (row.role === "user") {
+        question = row.text;
+        answer = "";
+      } else if (question && row.role === "assistant") {
+        answer = row.text;
+      }
+    }
+    return question && answer ? { question, answer } : null;
+  }
+
+  function questionKey(text) {
+    return String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
   function pairCount(rows) {
     let count = 0;
     let question = false;
@@ -75,6 +96,23 @@
       try { genericValid = fallback?.probeStrategy?.() === "roles"; }
       catch { genericValid = false; }
     }
+    // ChatGPT's visible answer may span several rich-text/code containers.
+    // If both extraction paths agree on the latest user question, prefer a
+    // much fuller explicit-role/turn answer over a truncated native snippet.
+    // Never use this override for Gemini, whose native selector is reliable.
+    if (platform === "chatgpt" && nativePairs > 0 && genericValid) {
+      const nativeLast = latestPair(nativeRows);
+      const genericLast = latestPair(genericRows);
+      let fallbackMode = "";
+      try { fallbackMode = fallback?.probeStrategy?.() || ""; } catch {}
+      if (nativeLast && genericLast &&
+          questionKey(nativeLast.question) === questionKey(genericLast.question) &&
+          (fallbackMode === "roles" || fallbackMode === "turns") &&
+          genericLast.answer.length >= Math.max(100, nativeLast.answer.length * 2)) {
+        return { rows: genericRows, mode: "universal-fuller-answer", pairs: genericPairs };
+      }
+    }
+
     if (nativePairs > 0 && (!genericValid || genericPairs <= nativePairs)) {
       return { rows: nativeRows, mode: "native", pairs: nativePairs };
     }
