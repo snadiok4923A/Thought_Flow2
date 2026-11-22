@@ -281,26 +281,45 @@ globalThis.TF_GENERIC_SELECTORS = (function () {
     return out;
   }
 
-  function collectMessages() {
-    var out = collectByRoles();
-    if (out.length) return strip(out);
-    out = collectByTurns();
-    if (out.length) return strip(out);
-    out = collectByBlocks();
-    return strip(out);
-  }
-
   function strip(out) {
     return out.map(function (m) {
       return { role: m.role, text: m.text, id: m.id || "" };
     });
   }
 
+  function pairCount(rows) {
+    var user = false;
+    var count = 0;
+    rows.forEach(function (row) {
+      if (row.role === "user") user = true;
+      else if (row.role === "assistant" && user) {
+        count++;
+        user = false;
+      }
+    });
+    return count;
+  }
+
+  function bestStrategy() {
+    // Do not stop on a partial role strategy with only the user's message.
+    // Try semantic turn containers and finally safe fallback heuristics.
+    var roleRows = collectByRoles();
+    if (pairCount(roleRows) > 0) return { name: "roles", rows: roleRows };
+    var turnRows = collectByTurns();
+    if (pairCount(turnRows) > 0) return { name: "turns", rows: turnRows };
+    var blockRows = collectByBlocks();
+    if (pairCount(blockRows) > 0) return { name: "alternating", rows: blockRows };
+    if (roleRows.length) return { name: "roles-partial", rows: roleRows };
+    if (turnRows.length) return { name: "turns-partial", rows: turnRows };
+    return { name: blockRows.length ? "alternating-partial" : "none", rows: blockRows };
+  }
+
+  function collectMessages() {
+    return strip(bestStrategy().rows);
+  }
+
   function probeStrategy() {
-    if (collectByRoles().length) return "roles";
-    if (collectByTurns().length) return "turns";
-    if (collectByBlocks().length) return "alternating";
-    return "none";
+    return bestStrategy().name;
   }
 
   // ---- Conversation id ---------------------------------------------------------
