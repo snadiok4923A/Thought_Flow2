@@ -22,7 +22,7 @@ function tabStorage(id) {
 }
 
 function page({ tab = "tab1", oldPairs = [], provider = "chatgpt",
-  question = QUESTION, time = 1000 } = {}) {
+  question = QUESTION, time = 1000, pathname = "/" } = {}) {
   let now = time;
   let timerId = 0;
   let observerCallback = null;
