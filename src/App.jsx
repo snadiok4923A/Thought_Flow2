@@ -1684,13 +1684,14 @@ export default function ThoughtFlowApp() {
       }
       if (cancelled || hasDirectBridge() || !sync) return;
 
-      const { session, items, captured, extensionLastSeen } = sync;
+      const { session, extensionLastSeen } = sync;
       // "Connected" = backend reachable AND the extension is actually
       // heartbeating (last ping < 90 s). ON alone never shows Yes.
       const extFresh =
         typeof extensionLastSeen === "number" && Date.now() - extensionLastSeen < 90000;
       const patch = { connected: !!extFresh };
-      if (typeof captured === 'number') patch.captured = captured;
+      // Live-only: never restore an old server's lifetime capture counter
+      // into this session's display. Only direct new-node acks increment it.
       if (session) {
         const remoteDir = normalizeCaptureDirection(session.direction);
         if (remoteDir !== state.direction) patch.direction = remoteDir;
@@ -1733,11 +1734,10 @@ export default function ThoughtFlowApp() {
         updateAiCapture(patch);
       }
 
-      // Re-ack anything that failed before (node already exists — no re-creation).
+      // LIVE-ONLY: never apply old backend sync items (or past counters).
+      // The only automatic Q+A path is the real-time extension direct bridge.
+      // Preserve historical records as-is; do not silently delete user data.
       await flushPendingAcks();
-      if (session && session.enabled && items && items.length) {
-        await applyAiCaptureItems(items, session);
-      }
     };
 
     poll();

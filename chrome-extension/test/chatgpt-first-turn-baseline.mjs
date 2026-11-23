@@ -137,7 +137,7 @@ oldChat.setConversation("old-chat");
 oldChat.append();
 oldChat.advance(10000);
 assert.equal(oldChat.sent.length, 0);
-assert.ok(oldChat.logs.some((entry) => entry.event === "baseline-skip"));
+assert.ok(oldChat.logs.some((entry) => entry.event === "history-ignored"));
 
 // A different submitted question must not unlock historical Q+A.
 const mismatch = harness();

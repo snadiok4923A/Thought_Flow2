@@ -51,9 +51,11 @@ async function setQueue(q) {
 }
 
 async function bumpCounter() {
-  const { capturedCount = 0 } = await chrome.storage.local.get("capturedCount");
-  const next = capturedCount + 1;
-  await chrome.storage.local.set({ capturedCount: next });
+  // This is a LIVE session counter, not a historical archive.
+  // The previous all-time local counter is preserved but no longer used.
+  const { liveCapturedCount = 0 } = await chrome.storage.session.get("liveCapturedCount");
+  const next = liveCapturedCount + 1;
+  await chrome.storage.session.set({ liveCapturedCount: next });
   try {
     await chrome.action.setBadgeText({ text: String(next > 999 ? "999+" : next) });
     await chrome.action.setBadgeBackgroundColor({ color: "#7c3aed" });
@@ -712,8 +714,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_STATS") {
-    chrome.storage.local.get({ capturedCount: 0 })
-      .then(({ capturedCount }) => sendResponse({ captured: capturedCount }))
+    chrome.storage.session.get({ liveCapturedCount: 0 })
+      .then(({ liveCapturedCount }) => sendResponse({ captured: liveCapturedCount }))
       .catch(() => sendResponse({ captured: null }));
     return true;
   }
@@ -747,7 +749,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("tf-retry", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "tf-retry") {
-    flushQueue();
+    // LIVE-ONLY MODE: never replay previously stored pending conversations.
+    // Existing legacy data is left untouched for safety, but is not imported.
     heartbeat();
     cleanupExpiredNoteJobs().catch(() => {});
     // Fallback when a ChatGPT SPA route change did not emit a tabs.onUpdated

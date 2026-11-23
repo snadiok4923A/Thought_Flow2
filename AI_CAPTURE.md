@@ -1,3 +1,81 @@
+## Live-only automatic capture — experimental v1.2.3
+
+**User requirement:** ChatGPT and Gemini should add **only Q+A written while
+ThoughtFlow capture is running now**. Opening an old conversation, reloading
+the extension, returning to a tab or reconnecting a backend must **not**
+create a burst of old nodes. The previous screenshot showed many historical
+`another` nodes appearing when the user resumed chatting.
+
+### Live-only contract
+
+- Automatic capture requires **fresh user input in the AI site's composer
+  while Capture is ON**, matched to the newly completed turn. The shared
+  capture engine uses ephemeral normalized question keys and a snapshot of
+  already-visible turns, not an import of old conversation histories.
+- Initial page load, late-loading older messages, SPA history navigation,
+  reload, and reopening previous chats do **not** authorize capture.
+- An explicitly sent ChatGPT prompt can carry a short-lived fingerprint
+  across **new-chat navigation** only. Reloading the SAME conversation path
+  cannot revive an old Send marker.
+- Each newly typed Q+A is eligible only once. If its answer grows during
+  generation, subsequent revisions use its same stable turn fingerprint
+  and update the existing Notes when safe.
+- A deliberate Notes **Ask ChatGPT** request is still eligible, but
+  **only the newest matching pair**, not older identical questions.
+- **No backlog retry**: a dropped automatic capture is **not** stored for
+  later import when the website or extension returns. Keep the ThoughtFlow
+  website and selected Start Node open while actively chatting.
+- Previous legacy retry queue contents remain **untouched but inert**. The
+  periodic background queue replay is disabled, and the frontend no longer
+  imports stale backend `/ai-capture/sync` items. This avoids deleting any
+  existing user data while ensuring old Q+A does not appear unexpectedly.
+- The popup shows a session-scoped **Live captured** counter instead of the
+  lifetime historical count. Older existing nodes/Notes are preserved;
+  this patch does **not** automatically delete previous duplicates.
+- This is a user-input-based capture contract; chat services that do not
+  dispatch browser `input` events or do not expose readable message roles
+  may need a small site adapter. Manual Quick add remains available.
+
+### Local regression tests
+
+```bash
+node chrome-extension/test/live-only-no-history.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+node chrome-extension/test/chatgpt-tab-session-capture.mjs
+node chrome-extension/test/universal-capture-pipeline.mjs
+node chrome-extension/test/universal-qa-detector.mjs
+```
+
+### Test the branch before merging
+
+Keep any local edits saved or committed before switching branches:
+
+```powershell
+git fetch origin fix/live-only-no-history-backfill-2026-11-23
+git switch -c live-only-test origin/fix/live-only-no-history-backfill-2026-11-23
+```
+
+Reload the unpacked extension (confirm **v1.2.3**) and refresh ThoughtFlow,
+Gemini and ChatGPT tabs. Keep the ThoughtFlow Start Node selected and both
+Capture toggles ON. First, open a *past* ChatGPT conversation and a past
+Gemini conversation: **zero new nodes** should be created. Next, send a
+*new* Q+A in each AI chat: **one node per new turn**, with complete Notes.
+Reload the AI tab and navigate old history again: **zero new nodes**. The
+popup's Live captured number should reflect only new captures in that
+extension session.
+
+If live capture is missing, check Diagnostics for `live-turn` (a newly
+typed question was authorized), `history-ignored` (old Q+A skipped),
+`send`/`direct-ok` (delivery), or `live-drop` (failed capture, no
+later replay). These log counts, never the full conversation text.
+
+The tests above are mocked/simulated JavaScript checks, **not proof that
+a real Gemini/ChatGPT browser session works**. Test manually before merge.
+To undo local branch testing: `git switch main`, then reload Extension.
+
+---
+
 ## Turn identity, complete answers and bounded delivery — v1.2.2
 
 **Observed:** a ChatGPT node was sometimes created with a short fragment,

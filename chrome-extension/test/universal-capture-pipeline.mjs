@@ -18,6 +18,7 @@ function harness({ host, provider, useNative, nativePartial = false }) {
   const timers = new Map();
   const captures = [];
   const listeners = [];
+  let composerInput = null;
   const messages = [];
   const addTimer = (fn, ms) => {
     const id = ++nextId;
@@ -54,7 +55,7 @@ function harness({ host, provider, useNative, nativePartial = false }) {
     document: {
       documentElement: {},
       querySelector() { return null; },
-      addEventListener() {},
+      addEventListener(type, cb) { if (type === "input") composerInput = cb; },
     },
     location: { hostname: host, host, pathname: "/c/test" },
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
@@ -93,6 +94,9 @@ function harness({ host, provider, useNative, nativePartial = false }) {
   return {
     ctx, captures, advance,
     pushPair() {
+      // A real live question is composed in the chat textarea BEFORE it is sent.
+      // Without this event, imported history must not create a node.
+      composerInput?.({ target: { closest: () => ({ value: question }) } });
       messages.push(
         { role: "user", text: question, id: "question" },
         { role: "assistant", text: answer, id: "answer" },
