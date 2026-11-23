@@ -1690,7 +1690,8 @@ export default function ThoughtFlowApp() {
       const extFresh =
         typeof extensionLastSeen === "number" && Date.now() - extensionLastSeen < 90000;
       const patch = { connected: !!extFresh };
-      if (typeof captured === 'number') patch.captured = captured;
+      // Live-only: never restore an old server's lifetime capture counter
+      // into this session's display. Only direct new-node acks increment it.
       if (session) {
         const remoteDir = normalizeCaptureDirection(session.direction);
         if (remoteDir !== state.direction) patch.direction = remoteDir;
