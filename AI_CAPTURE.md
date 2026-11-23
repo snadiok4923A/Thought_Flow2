@@ -1,3 +1,59 @@
+## GitHub Pages vs localhost board selection — v1.2.4 (experimental)
+
+**Observed:** ThoughtFlow works at `http://localhost:5173/Thought_Flow2/`
+but no new nodes appear at
+`https://snadiok4923a.github.io/Thought_Flow2/` when **both** tabs
+are open. Screenshots show a successful local Q+A capture and no hosted
+Q+A capture.
+
+**Confirmed cause in extension code:** `background.js/findThoughtFlowTab()`
+previously returned the **first** result of `chrome.tabs.query()`. The
+direct bridge sent every capture to that one tab regardless of which
+ThoughtFlow board the user meant. A green "Connected (direct)" meant
+one of the boards was reachable, not necessarily the hosted board.
+
+**Fix:** On user activation of a ThoughtFlow tab, remember only its
+browser tab ID in `chrome.storage.session`. All subsequent direct
+Q+A delivery and popup health/direction operations prefer that board;
+after browser/extension restart with no preference, choose the
+matching ThoughtFlow tab with the newest `lastAccessed` timestamp
+rather than the first query result. If the target tab has closed, fall
+back to another open ThoughtFlow tab. Do NOT duplicate a Q+A to all
+boards. The popup now displays `Connected (GitHub Pages)` or
+`Connected (localhost)` for the actual selected board.
+
+**Important:** These are two separate website origins and do **not**
+automatically synchronize their local Notes, mind maps, or storage.
+To direct a new capture to GitHub Pages when both are open, simply
+click/activate the GitHub Pages tab before returning to ChatGPT or
+Gemini. Verify the popup says `Connected (GitHub Pages)`. To target
+localhost, activate that tab instead. Keeping only the intended
+ThoughtFlow tab open also prevents ambiguous routing.
+
+The source code for the published GitHub Pages JavaScript bundle
+contains the `thoughtflow-capture-direct` handler, but the assistant
+could not test the user's live deployed browser session. After
+updating the unpacked Extension to v1.2.4, reload the Extension,
+refresh the hosted and local boards, and test a new Q+A on the
+hosted board. **No website redeploy is necessary for this particular
+extension-routing fix**, provided the existing deployed site's bridge
+and direct capture listener work.
+
+Regression:
+
+```bash
+node chrome-extension/test/two-board-routing.mjs
+node chrome-extension/test/live-only-background.mjs
+node chrome-extension/test/live-only-no-history.mjs
+```
+
+Do not merge the PR until the user has verified a new Q+A appears
+on GitHub Pages while both board tabs are open. A hosted board
+with no selected Start Node or with its Capture panel switched OFF
+still cannot receive Q+A; address that site state separately.
+
+---
+
 ## Live-only automatic capture — experimental v1.2.3
 
 **User requirement:** ChatGPT and Gemini should add **only Q+A written while
