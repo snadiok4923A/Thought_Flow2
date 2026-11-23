@@ -476,8 +476,11 @@
           // through the normal, proven Q+A collector. The background router
           // recognizes this explicit Notes question and routes its answer
           // BACK to the existing Notes editor instead of making a child node.
+          // The explicit Notes Ask can authorize only the MOST RECENT
+          // matching Q+A. An older identical question is history, not a
+          // second answer to send or a new child node.
           const pendingNote = selectors.platform === "chatgpt" &&
-            isPendingNotesQuestion(p.question);
+            idx === lastIdx && isPendingNotesQuestion(p.question);
           const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
           const fpWasLive = state.liveTurns.has(fp);
           const live = pendingNote || submittedNow ||
