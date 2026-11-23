@@ -51,9 +51,11 @@ async function setQueue(q) {
 }
 
 async function bumpCounter() {
-  const { capturedCount = 0 } = await chrome.storage.local.get("capturedCount");
-  const next = capturedCount + 1;
-  await chrome.storage.local.set({ capturedCount: next });
+  // This is a LIVE session counter, not a historical archive.
+  // The previous all-time local counter is preserved but no longer used.
+  const { liveCapturedCount = 0 } = await chrome.storage.session.get("liveCapturedCount");
+  const next = liveCapturedCount + 1;
+  await chrome.storage.session.set({ liveCapturedCount: next });
   try {
     await chrome.action.setBadgeText({ text: String(next > 999 ? "999+" : next) });
     await chrome.action.setBadgeBackgroundColor({ color: "#7c3aed" });
