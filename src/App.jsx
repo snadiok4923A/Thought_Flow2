@@ -1684,7 +1684,7 @@ export default function ThoughtFlowApp() {
       }
       if (cancelled || hasDirectBridge() || !sync) return;
 
-      const { session, items, captured, extensionLastSeen } = sync;
+      const { session, extensionLastSeen } = sync;
       // "Connected" = backend reachable AND the extension is actually
       // heartbeating (last ping < 90 s). ON alone never shows Yes.
       const extFresh =
@@ -1734,16 +1734,10 @@ export default function ThoughtFlowApp() {
         updateAiCapture(patch);
       }
 
-      // Re-ack anything that failed before (node already exists — no re-creation).
+      // LIVE-ONLY: never apply old backend sync items (or past counters).
+      // The only automatic Q+A path is the real-time extension direct bridge.
+      // Preserve historical records as-is; do not silently delete user data.
       await flushPendingAcks();
-      // LIVE-ONLY MODE: this legacy server sync can contain Q+A created
-      // hours ago while the app was closed. Never import those into the
-      // current mind map. New messages arrive exclusively via the live
-      // extension → bridge → direct-capture event above.
-      // Keep legacy records untouched rather than silently deleting user data.
-      if (items?.length) {
-        // Intentionally no automatic applyAiCaptureItems() here.
-      }
     };
 
     poll();
