@@ -52,7 +52,7 @@ function page({ tab = "tab1", oldPairs = [], provider = "chatgpt",
   };
   const context = {
     Date: { now: () => now },
-    location: { host: provider === "chatgpt" ? "chatgpt.com" : "gemini.google.com" },
+    location: { host: provider === "chatgpt" ? "chatgpt.com" : "gemini.google.com", pathname },
     sessionStorage: tabStorage(tab),
     document: {
       documentElement: {},
@@ -131,7 +131,7 @@ for (const trigger of ["sendClick", "sendEnter", "notesAsk"]) {
   else original[trigger]();
   assert.ok(tabStorage(tab).getItem(STORAGE_KEY), trigger + ": marker saved");
   const replacement = page({
-    tab, time: 1200,
+    tab, time: 1200, pathname: "/c/new-conversation",
     oldPairs: [
       { role: "user", text: QUESTION, id: "u" },
       { role: "assistant", text: ANSWER, id: "a" },
@@ -153,7 +153,22 @@ const old = page({
 });
 old.advance(8000);
 assert.equal(old.sent.length, 0);
-assert.ok(old.logs.some((x) => x.event === "baseline-skip"));
+assert.ok(old.logs.some((x) => x.event === "history-ignored"));
+
+// A same-conversation reload is NOT a new live question. If the browser
+// reloads before a previous answer was delivered, it must not backfill it.
+const sameTab = "same-route";
+const beforeReload = page({ tab: sameTab, pathname: "/c/stay" });
+beforeReload.sendClick();
+const afterReload = page({ tab: sameTab, pathname: "/c/stay", time: 1200,
+  oldPairs: [
+    { role: "user", text: QUESTION, id: "reload-user" },
+    { role: "assistant", text: ANSWER, id: "reload-answer" },
+  ],
+});
+afterReload.advance(8000);
+assert.equal(afterReload.sent.length, 0);
+assert.equal(tabStorage(sameTab).getItem(STORAGE_KEY), null);
 
 // Expired tab-local intent cannot unlock old Q+A.
 tabStorage("expired").setItem(STORAGE_KEY,
