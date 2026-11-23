@@ -133,15 +133,40 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   }
 });
 
-// ---- Direct delivery to the open ThoughtFlow tab ---------------------------
-// No server, no queue. Finds the ThoughtFlow tab and asks its bridge
-// content script to hand the pair to the React app, which creates the
-// node (or drops it if the panel is OFF / no start node / no board).
+// ---- Direct delivery to the chosen ThoughtFlow board -----------------------
+// Multiple ThoughtFlow tabs may be open: e.g. localhost AND GitHub Pages.
+// Previously we used .find(), so whichever tab Chrome returned FIRST silently
+// received ALL captures. Prefer the board the user most recently activated.
+// Persist only its tab ID across MV3 service-worker sleeps (not chat text).
+const PREFERRED_BOARD_TAB_KEY = "tfPreferredBoardTabId";
+chrome.tabs.onActivated?.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (isThoughtFlowUrl(tab?.url)) {
+      await chrome.storage.session.set({ [PREFERRED_BOARD_TAB_KEY]: tabId });
+      dbg("board-target", tab.url.startsWith("https:") ? "GitHub Pages" : "localhost");
+    }
+  } catch { /* tab closed/navigated before lookup */ }
+});
+
 async function findThoughtFlowTab() {
   try {
-    const tabs = await chrome.tabs.query({ url: THOUGHTFLOW_URLS });
-    // Chrome URL match patterns cannot filter ports. Exclude unrelated local apps.
-    return (tabs || []).find((tab) => isThoughtFlowUrl(tab.url)) || null;
+    // Chrome URL match patterns do not filter ports. Verify the exact route.
+    const tabs = (await chrome.tabs.query({ url: THOUGHTFLOW_URLS }))
+      .filter((tab) => typeof tab.id === "number" && isThoughtFlowUrl(tab.url));
+    if (!tabs.length) return null;
+    if (tabs.length === 1) return tabs[0];
+    let preferredId = null;
+    try {
+      preferredId = (await chrome.storage.session.get(PREFERRED_BOARD_TAB_KEY))[PREFERRED_BOARD_TAB_KEY];
+    } catch { /* session storage unavailable: use last-access time */ }
+    const preferred = tabs.find((tab) => tab.id === preferredId);
+    if (preferred) return preferred;
+    // After a browser restart or extension reload the last activated board
+    // may be unknown. Choose the most recently used, not query-result order.
+    return [...tabs].sort((a, b) =>
+      (b.lastAccessed || 0) - (a.lastAccessed || 0)
+    )[0];
   } catch {
     return null;
   }
@@ -657,7 +682,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (tab) {
         const bridge = await ensureThoughtFlowBridge(tab);
         return sendResponse(bridge.ok
-          ? { connected: true, storage: "direct", ok: true, status: "ok" }
+          ? { connected: true, storage: "direct", ok: true, status: "ok",
+              target: tab.url.startsWith("https:") ? "GitHub Pages" : "localhost" }
           : { connected: false, reason: bridge.reason });
       }
       try {
