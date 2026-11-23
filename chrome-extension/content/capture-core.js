@@ -173,7 +173,11 @@
         const now = Date.now();
         if (!entry || typeof entry.key !== "string" || !entry.key ||
             !Number.isFinite(entry.at) || now < entry.at ||
-            now - entry.at >= SUBMISSION_INTENT_TTL_MS) {
+            now - entry.at >= SUBMISSION_INTENT_TTL_MS ||
+            // Reloading the SAME already-open chat is not a live Send.
+            // Only / -> /c/<new-id> navigation may recover an outbound Send.
+            (typeof entry.fromPath === "string" &&
+              entry.fromPath === (location.pathname || "/"))) {
           sessionStorage.removeItem(CHATGPT_SEND_SESSION_KEY);
           return;
         }
@@ -251,7 +255,8 @@
       if (state.submittedQuestions.length > 8) state.submittedQuestions.shift();
       dbg("submission-observed", `q=${raw.length}c`);
       try {
-        sessionStorage.setItem(CHATGPT_SEND_SESSION_KEY, JSON.stringify({ key, at: now }));
+        sessionStorage.setItem(CHATGPT_SEND_SESSION_KEY,
+          JSON.stringify({ key, at: now, fromPath: location.pathname || "/" }));
         dbg("submission-saved", "fingerprint persisted in this ChatGPT tab");
       } catch (error) {
         dbg("submission-storage-unavailable", error?.name || "storage");
