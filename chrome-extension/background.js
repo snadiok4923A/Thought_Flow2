@@ -747,7 +747,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("tf-retry", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "tf-retry") {
-    flushQueue();
+    // LIVE-ONLY MODE: never replay previously stored pending conversations.
+    // Existing legacy data is left untouched for safety, but is not imported.
     heartbeat();
     cleanupExpiredNoteJobs().catch(() => {});
     // Fallback when a ChatGPT SPA route change did not emit a tabs.onUpdated
