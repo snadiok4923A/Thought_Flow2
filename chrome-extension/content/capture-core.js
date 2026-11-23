@@ -82,11 +82,9 @@
     if (!selectors || typeof selectors.collectMessages !== "function") return;
     if (!selectors.isSupportedPage()) return;
 
-    // Cooldown before a *transiently dropped* send (e.g. website panel OFF)
-    // may be retried. Tunable for tests / picky users via chrome.storage.sync.
+    // A legacy setting may still exist in chrome.storage.sync, but live-only
+    // mode intentionally never replays a failed auto-capture later.
     const SEND_RETRY_COOLDOWN_MS = 30000;
-    const retryCooldown = () =>
-      Math.max(1000, Number(state.settings.retryCooldownMs) || SEND_RETRY_COOLDOWN_MS);
 
     const state = {
       settings: { captureEnabled: true, stabilityMs: DEFAULT_STABILITY_MS },
