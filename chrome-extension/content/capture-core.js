@@ -16,6 +16,8 @@
   const SCAN_DEBOUNCE_MS = 350;
   const DEFAULT_STABILITY_MS = 2000;
   const SEEN_CAP = 600;
+  const LIVE_INTENT_TTL_MS = 180000; // user input only, never chat history
+  const LIVE_TURN_TTL_MS = 600000; // allow updates to one live answer
   const SUBMISSION_INTENT_TTL_MS = 120000; // for a new ChatGPT conversation URL
   // Web sessionStorage is scoped to this ChatGPT browser tab/origin and lives
   // across full document navigation; unlike JS variables, it survives the
@@ -92,7 +94,10 @@
       stats: new Map(), // fp -> { lastSig, stableSince }
       convId: null,
       baselineDone: false,
-      submittedQuestions: [], // local intent only; never persisted or auto-imported
+      submittedQuestions: [], // explicit ChatGPT send intent, for navigation only
+      liveInputs: [], // current tab's typed prompts: hashes + baseline identities only
+      liveTurns: new Map(), // only Q+A turns initiated while this capture was active
+      oldTurnsLogged: new Set(),
       scanTimer: null,
       lastScanSig: "",
       waitingLogged: new Set(),
@@ -122,7 +127,11 @@
         const wasEnabled = state.settings.captureEnabled;
         state.settings = items;
         dbg("settings", `enabled=${items.captureEnabled} stabilityMs=${items.stabilityMs}`);
-        if (!wasEnabled && items.captureEnabled) state.baselineDone = false; // re-baseline on enable
+        if (!wasEnabled && items.captureEnabled) {
+          state.baselineDone = false;
+          state.liveInputs = [];
+          state.liveTurns.clear();
+        } // Never import earlier conversations when capture is re-enabled
       }
     );
     chrome.storage.onChanged.addListener((changes, area) => {
@@ -134,7 +143,10 @@
         state.settings.retryCooldownMs = changes.retryCooldownMs.newValue || SEND_RETRY_COOLDOWN_MS;
       if (before === false && state.settings.captureEnabled) {
         state.baselineDone = false;
-        dbg("settings", "capture re-enabled → baseline");
+        state.liveInputs = [];
+        state.liveTurns.clear();
+        state.submittedQuestions = [];
+        dbg("settings", "capture re-enabled → live questions only");
       }
     });
 
@@ -185,10 +197,53 @@
       } catch { /* web storage unavailable */ }
     }
 
+    // Only fresh user-composed questions qualify for automatic capture.
+    // Merely opening a historical thread or restoring it after reload cannot
+    // authorize captures, even when messages arrive in several DOM batches.
+    function registerLiveInput(question) {
+      const raw = normalize(question);
+      const key = submissionKey(raw);
+      if (!state.settings.captureEnabled || !key) return;
+      const now = Date.now();
+      const { pairs } = collectPairs();
+      const known = new Set(pairs.map((p) => pairFingerprint(selectors.platform, state.convId, p)));
+      state.liveInputs = state.liveInputs.filter((i) => now - i.at < LIVE_INTENT_TTL_MS);
+      state.liveInputs.push({ key, at: now, known });
+      if (state.liveInputs.length > 12) state.liveInputs.shift();
+    }
+
+    // Same input signal is used on Gemini, ChatGPT, Claude, DeepSeek, etc.
+    // Only an ephemeral key is retained in memory, not prompt/answer text.
+    if (document.addEventListener) {
+      document.addEventListener("input", (event) => {
+        const el = event.target?.closest?.(
+          'textarea, input:not([type="hidden"]), [contenteditable="true"], [role="textbox"]'
+        );
+        if (!el) return;
+        registerLiveInput(el.value || el.innerText || el.textContent || "");
+      }, true);
+    }
+
+    function liveTurnEligible(p, fp, idx, lastIdx, now) {
+      const acceptedAt = state.liveTurns.get(fp);
+      if (acceptedAt && now - acceptedAt <= LIVE_TURN_TTL_MS) return true;
+      if (idx !== lastIdx) return false;
+      const key = submissionKey(p.question);
+      const intent = state.liveInputs.find((i) =>
+        i.key === key && now >= i.at && now - i.at < LIVE_INTENT_TTL_MS &&
+        !i.known.has(fp)
+      );
+      if (!intent) return false;
+      state.liveTurns.set(fp, now);
+      dbg("live-turn", `q=${p.question.length}c platform=${selectors.platform}`);
+      return true;
+    }
+
     function markSubmittedQuestion(question) {
       const raw = normalize(question);
       const key = submissionKey(raw);
-      if (!key || selectors.platform !== "chatgpt") return;
+      if (!key || selectors.platform !== "chatgpt" || !state.settings.captureEnabled) return;
+      registerLiveInput(raw);
       const now = Date.now();
       state.submittedQuestions = state.submittedQuestions
         .filter((item) => now - item.at < SUBMISSION_INTENT_TTL_MS);
@@ -293,13 +348,13 @@
         state.inflight.delete(fp);
         const err = chrome.runtime.lastError;
         if (err) {
-          state.retryAfter.set(fp, Date.now() + retryCooldown());
-          dbg("send-error", err.message || "runtime error");
+          remember(fp);
+          dbg("live-drop", (err.message || "runtime error") + " — no backlog retry");
           return;
         }
         if (!resp) {
-          state.retryAfter.set(fp, Date.now() + retryCooldown());
-          dbg("send-error", "no response from background");
+          remember(fp);
+          dbg("live-drop", "background did not respond — no backlog retry");
           return;
         }
         if (resp.drop) {
@@ -308,9 +363,10 @@
             remember(fp);
             dbg("send-dropped", `${resp.reason} (permanent — not retrying)`);
           } else {
-            // Transient (e.g. website panel OFF) — do NOT remember; retry after cooldown.
-            state.retryAfter.set(fp, Date.now() + retryCooldown());
-            dbg("send-dropped", resp.reason || "unknown");
+            // Live-only: do not replay this answer when the panel/browser
+            // becomes available much later. The old content is never queued.
+            remember(fp);
+            dbg("live-drop", (resp.reason || "unavailable") + " — no backlog retry");
           }
           return;
         }
@@ -336,8 +392,8 @@
         chrome.runtime.sendMessage({ type: "TF_TRY_SEND", payload }, settle);
       } catch {
         state.inflight.delete(fp);
-        state.retryAfter.set(fp, Date.now() + retryCooldown());
-        dbg("send-error", "extension reloading (context invalidated)");
+        remember(fp);
+        dbg("live-drop", "extension reloading — no backlog retry");
       }
     }
 
@@ -357,6 +413,8 @@
           state.baselineDone = false;
           state.stats.clear();
           state.sentAnswers.clear();
+          state.liveTurns.clear();
+          state.oldTurnsLogged.clear();
         }
 
         const { pairs, msgCount } = collectPairs();
@@ -408,6 +466,18 @@
           const pendingNote = selectors.platform === "chatgpt" &&
             isPendingNotesQuestion(p.question);
           const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
+          const fpWasLive = state.liveTurns.has(fp);
+          const live = pendingNote || submittedNow ||
+            liveTurnEligible(p, fp, idx, lastIdx, now);
+          if (!enabled && !pendingNote) return;
+          if (!live) {
+            if (idx === lastIdx && !state.oldTurnsLogged.has(fp)) {
+              state.oldTurnsLogged.add(fp);
+              dbg("history-ignored", `q=${p.question.length}c — no live input`);
+            }
+            return; // do not store or retry historical Q+A
+          }
+          if (!fpWasLive) state.liveTurns.set(fp, now);
           const answerSig = hash(normalize(p.answer));
           const sentSig = state.sentAnswers.get(fp);
           if (state.seen.has(fp)) {
@@ -453,19 +523,9 @@
           const stuckStreaming = streaming && stableFor >= stabilityMs * 3;
           const settled = settledByTime && (!streaming || stuckStreaming);
 
-          if (!state.baselineDone && !pendingNote && !submittedNow) {
-            // Baseline: every finished pair already on screen is skipped so
-            // old conversations NEVER retro-capture. Only the last pair of a
-            // conversation that is ACTIVELY STREAMING survives (an in-flight
-            // answer completes normally once it finishes).
-            const inFlight = streaming && idx === lastIdx;
-            if (!inFlight) {
-              remember(fp);
-              state.stats.delete(fp);
-              dbg("baseline-skip", `q=${p.question.length}c`);
-            }
-            return;
-          }
+          // A freshly typed question is the ONLY automatic exception to the
+          // conversation baseline. Streaming old history does not count as live.
+          if (!state.baselineDone && !live) return;
 
           if (settled) {
             state.stats.delete(fp);
