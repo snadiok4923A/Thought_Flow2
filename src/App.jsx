@@ -1735,8 +1735,13 @@ export default function ThoughtFlowApp() {
 
       // Re-ack anything that failed before (node already exists — no re-creation).
       await flushPendingAcks();
-      if (session && session.enabled && items && items.length) {
-        await applyAiCaptureItems(items, session);
+      // LIVE-ONLY MODE: this legacy server sync can contain Q+A created
+      // hours ago while the app was closed. Never import those into the
+      // current mind map. New messages arrive exclusively via the live
+      // extension → bridge → direct-capture event above.
+      // Keep legacy records untouched rather than silently deleting user data.
+      if (items?.length) {
+        // Intentionally no automatic applyAiCaptureItems() here.
       }
     };
 
