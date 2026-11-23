@@ -18,6 +18,7 @@ function harness({ host, provider, useNative, nativePartial = false }) {
   const timers = new Map();
   const captures = [];
   const listeners = [];
+  let composerInput = null;
   const messages = [];
   const addTimer = (fn, ms) => {
     const id = ++nextId;
