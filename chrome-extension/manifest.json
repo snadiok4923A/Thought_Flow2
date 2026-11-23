@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.2.3",
-  "description": "Live-only Q+A capture from active AI chats: no automatic history import, backlog replay, or old-node duplication.",
+  "version": "1.2.4",
+  "description": "Live Q+A capture with explicit active ThoughtFlow board routing across GitHub Pages and localhost.",
   "permissions": [
     "storage",
     "alarms",
