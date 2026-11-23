@@ -714,8 +714,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "TF_STATS") {
-    chrome.storage.local.get({ capturedCount: 0 })
-      .then(({ capturedCount }) => sendResponse({ captured: capturedCount }))
+    chrome.storage.session.get({ liveCapturedCount: 0 })
+      .then(({ liveCapturedCount }) => sendResponse({ captured: liveCapturedCount }))
       .catch(() => sendResponse({ captured: null }));
     return true;
   }
