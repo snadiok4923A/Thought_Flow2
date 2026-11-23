@@ -109,8 +109,10 @@ async function refreshHealth() {
     const h = await chrome.runtime.sendMessage({ type: "TF_HEALTH" });
     const connected = !!(h && h.connected);
     $("connDot").className = "dot " + (connected ? "on" : "off");
+    // Make the chosen delivery destination visible when both localhost
+    // and GitHub Pages are open. Connection to one is not connection to both.
     $("connText").textContent = connected
-      ? `Connected (${h.storage || "?"})`
+      ? `Connected (${h.target || h.storage || "?"})`
       : h && h.reason ? `Bridge blocked: ${h.reason}` : "Offline";
     return connected;
   } catch {
