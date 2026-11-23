@@ -238,6 +238,14 @@
         !i.known.has(fp)
       );
       if (!intent) return false;
+      // One typed question can unlock only ONE new turn. Its answer may
+      // continue growing, but history in a different route cannot reuse it.
+      state.liveInputs = state.liveInputs.filter((i) => i !== intent);
+      for (const [turn, at] of state.liveTurns) {
+        if (now - at > LIVE_TURN_TTL_MS || state.liveTurns.size > 64) {
+          state.liveTurns.delete(turn);
+        }
+      }
       state.liveTurns.set(fp, now);
       dbg("live-turn", `q=${p.question.length}c platform=${selectors.platform}`);
       return true;
