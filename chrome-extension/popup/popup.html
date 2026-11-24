@@ -11,7 +11,7 @@
         <span class="logo" id="developerLogo" title="Shift-click for developer tools">⬡</span>
         <div>
           <h1>ThoughtFlow AI Capture</h1>
-          <p class="sub">Exact Q+A → one mind-map node</p>
+          <p class="sub" id="extensionVersion">Exact Q+A → one mind-map node</p>
         </div>
       </div>
     </header>
@@ -55,6 +55,13 @@
         <select id="direction">
           <option value="right">Right →</option>
           <option value="below">Below ↓</option>
+        </select>
+      </section>
+
+      <section class="row">
+        <span class="label">Send to</span>
+        <select id="boardTarget" aria-label="Choose ThoughtFlow destination">
+          <option value="auto">Automatic</option>
         </select>
       </section>
 
