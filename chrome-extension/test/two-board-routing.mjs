@@ -73,8 +73,24 @@ assert.equal(typeof activated, "function");
 assert.equal(typeof context.findThoughtFlowTab, "function");
 assert.equal(typeof context.deliverDirect, "function");
 
-// Initial state: both tabs present, lastAccessed (local) wins, not array order.
+// Initial state: when neither tab was explicitly selected, prefer the
+// published GitHub Pages site rather than silently hijacking localhost.
+assert.equal((await context.findThoughtFlowTab()).id, 22);
+
+// Users can explicitly pin one destination, even while other tabs activate.
+const pinLocal = await new Promise((resolve) =>
+  onMessage({ type: "TF_PIN_BOARD", tabId: 11 }, {}, resolve));
+assert.equal(pinLocal.ok, true);
+await activated({ tabId: 22 });
 assert.equal((await context.findThoughtFlowTab()).id, 11);
+const choices = await new Promise((resolve) =>
+  onMessage({ type: "TF_LIST_BOARDS" }, {}, resolve));
+assert.equal(choices.tabs.length, 2);
+assert.equal(choices.pinnedId, 11);
+assert.equal(choices.targetId, 11);
+const unpin = await new Promise((resolve) =>
+  onMessage({ type: "TF_PIN_BOARD", tabId: null }, {}, resolve));
+assert.equal(unpin.ok, true);
 
 // User intentionally opens GitHub Pages, then ChatGPT: stick with hosted.
 await activated({ tabId: 22 });
@@ -100,7 +116,8 @@ assert.equal((await context.findThoughtFlowTab()).id, 22);
 await context.deliverDirect({ question: "Third Q", answer: "Third A" });
 assert.deepEqual(deliveries.map((x) => x.id), [22, 11, 22]);
 
-// Browser/session restarts: resort by last-access time, never first match.
+// Browser/session restarts: prefer hosted when no selection exists, not
+// arbitrary tab order.
 tabs = [
   { id: 11, url: local, lastAccessed: 500 },
   { id: 22, url: hosted, lastAccessed: 1500 },
