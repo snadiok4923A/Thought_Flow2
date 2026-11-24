@@ -100,7 +100,8 @@
       lastScanSig: "",
       waitingLogged: new Set(),
       inflight: new Set(), // sends awaiting a server response
-      retryAfter: new Map(), // fp -> epoch ms before a dropped send may be retried
+      retryAfter: new Map(), // fp -> next short-lived retry in THIS active chat only
+      deliveryAttempts: new Map(), // bounded, in-memory transient failures only
       sentAnswers: new Map(), // fp -> answer signature already delivered
       wakeTimer: null, // precise wake-up when the next settle/retry deadline is known
     };
@@ -143,6 +144,8 @@
         state.baselineDone = false;
         state.liveInputs = [];
         state.liveTurns.clear();
+        state.deliveryAttempts.clear();
+        state.retryAfter.clear();
         state.submittedQuestions = [];
         dbg("settings", "capture re-enabled → live questions only");
       }
@@ -350,6 +353,24 @@
       return { pairs, msgCount: msgs.length };
     }
 
+    function shortLiveRetry(fp, reason) {
+      // A brief website render/reload can reject a valid LIVE Q+A as "busy"
+      // or time out. Dropping it forever is incorrect, but storing history
+      // for later replay violates live-only mode. Retry only in this active
+      // tab (at most twice, within 20 seconds), never to disk.
+      const retryable = new Set(["busy", "bridge-timeout", "app-timeout",
+        "bridge-unavailable", "error"]);
+      if (!retryable.has(reason)) return false;
+      const now = Date.now();
+      const attempt = state.deliveryAttempts.get(fp) || { count: 0, firstAt: now };
+      if (attempt.count >= 2 || now - attempt.firstAt > 20000) return false;
+      attempt.count++;
+      state.deliveryAttempts.set(fp, attempt);
+      state.retryAfter.set(fp, now + 1200);
+      dbg("live-retry", `${reason} attempt=${attempt.count}/2`);
+      return true;
+    }
+
     function send(pair, fp, convId) {
       // Never mark a pair as "seen" before the server durably accepts (or
       // queues, or definitively rejects) it — otherwise a transient drop
@@ -359,7 +380,10 @@
         state.inflight.delete(fp);
         const err = chrome.runtime.lastError;
         if (err) {
+          // Lost runtime channels after extension reload should not replay
+          // older chats. No persistent retry is attempted.
           remember(fp);
+          state.deliveryAttempts.delete(fp);
           dbg("live-drop", (err.message || "runtime error") + " — no backlog retry");
           return;
         }
@@ -369,6 +393,8 @@
           return;
         }
         if (resp.drop) {
+          if (shortLiveRetry(fp, resp.reason)) return;
+          state.deliveryAttempts.delete(fp);
           if (resp.reason === "auth" || resp.reason === "invalid") {
             // Permanent (bad token / bad payload) — never retry, but don't loop either.
             remember(fp);
@@ -382,6 +408,8 @@
           return;
         }
         remember(fp);
+        state.deliveryAttempts.delete(fp);
+        state.retryAfter.delete(fp);
         state.sentAnswers.set(fp, hash(normalize(pair.answer)));
         consumeSubmittedQuestion(pair.question);
         if (resp.queued) dbg("send-ok", "queued (API offline)");
@@ -425,6 +453,8 @@
           state.stats.clear();
           state.sentAnswers.clear();
           state.liveTurns.clear();
+          state.deliveryAttempts.clear();
+          state.retryAfter.clear();
           state.oldTurnsLogged.clear();
         }
 
