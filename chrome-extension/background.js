@@ -139,6 +139,7 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 // received ALL captures. Prefer the board the user most recently activated.
 // Persist only its tab ID across MV3 service-worker sleeps (not chat text).
 const PREFERRED_BOARD_TAB_KEY = "tfPreferredBoardTabId";
+const PINNED_BOARD_TAB_KEY = "tfPinnedBoardTabId";
 chrome.tabs.onActivated?.addListener(async ({ tabId }) => {
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -149,27 +150,31 @@ chrome.tabs.onActivated?.addListener(async ({ tabId }) => {
   } catch { /* tab closed/navigated before lookup */ }
 });
 
-async function findThoughtFlowTab() {
+async function getOpenThoughtFlowTabs() {
   try {
-    // Chrome URL match patterns do not filter ports. Verify the exact route.
-    const tabs = (await chrome.tabs.query({ url: THOUGHTFLOW_URLS }))
+    return (await chrome.tabs.query({ url: THOUGHTFLOW_URLS }))
       .filter((tab) => typeof tab.id === "number" && isThoughtFlowUrl(tab.url));
-    if (!tabs.length) return null;
-    if (tabs.length === 1) return tabs[0];
-    let preferredId = null;
-    try {
-      preferredId = (await chrome.storage.session.get(PREFERRED_BOARD_TAB_KEY))[PREFERRED_BOARD_TAB_KEY];
-    } catch { /* session storage unavailable: use last-access time */ }
-    const preferred = tabs.find((tab) => tab.id === preferredId);
-    if (preferred) return preferred;
-    // After a browser restart or extension reload the last activated board
-    // may be unknown. Choose the most recently used, not query-result order.
-    return [...tabs].sort((a, b) =>
-      (b.lastAccessed || 0) - (a.lastAccessed || 0)
-    )[0];
-  } catch {
-    return null;
-  }
+  } catch { return []; }
+}
+
+async function findThoughtFlowTab() {
+  const tabs = await getOpenThoughtFlowTabs();
+  if (!tabs.length) return null;
+  let pinnedId, preferredId;
+  try {
+    const state = await chrome.storage.session.get([PINNED_BOARD_TAB_KEY, PREFERRED_BOARD_TAB_KEY]);
+    pinnedId = state[PINNED_BOARD_TAB_KEY];
+    preferredId = state[PREFERRED_BOARD_TAB_KEY];
+  } catch { /* use best fallback */ }
+  const pinned = tabs.find((tab) => tab.id === pinnedId);
+  if (pinned) return pinned;
+  const preferred = tabs.find((tab) => tab.id === preferredId);
+  if (preferred) return preferred;
+  // Default to production when both are open and no board has been selected.
+  // Unlike localhost, the hosted site is the user's published destination.
+  const hosted = tabs.find((tab) => tab.url.startsWith("https://snadiok4923a.github.io/"));
+  if (hosted) return hosted;
+  return [...tabs].sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
 }
 
 // A bridge that holds the message port open for a page ack must never hang the
@@ -671,6 +676,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ drop: true, reason: "error" });
       });
     return true; // async
+  }
+
+  if (msg.type === "TF_LIST_BOARDS") {
+    (async () => {
+      const tabs = await getOpenThoughtFlowTabs();
+      const target = await findThoughtFlowTab();
+      let pinnedId = null;
+      try {
+        pinnedId = (await chrome.storage.session.get(PINNED_BOARD_TAB_KEY))[PINNED_BOARD_TAB_KEY] ?? null;
+      } catch { /* optional */ }
+      sendResponse({
+        ok: true,
+        tabs: tabs.map((tab) => ({
+          id: tab.id, label: tab.url.startsWith("https:") ? "GitHub Pages" : "localhost",
+        })),
+        targetId: target?.id ?? null,
+        pinnedId,
+      });
+    })().catch(() => sendResponse({ ok: false, tabs: [] }));
+    return true;
+  }
+
+  if (msg.type === "TF_PIN_BOARD") {
+    (async () => {
+      const id = msg.tabId;
+      if (id === null) {
+        await chrome.storage.session.remove(PINNED_BOARD_TAB_KEY);
+        sendResponse({ ok: true });
+        return;
+      }
+      const tabs = await getOpenThoughtFlowTabs();
+      const tab = tabs.find((t) => t.id === id);
+      if (!tab) { sendResponse({ ok: false, reason: "board-tab-closed" }); return; }
+      await chrome.storage.session.set({ [PINNED_BOARD_TAB_KEY]: tab.id });
+      sendResponse({ ok: true, target: tab.url.startsWith("https:") ? "GitHub Pages" : "localhost" });
+    })().catch((error) => sendResponse({ ok: false, reason: error?.message || "not set" }));
+    return true;
   }
 
   if (msg.type === "TF_HEALTH") {
