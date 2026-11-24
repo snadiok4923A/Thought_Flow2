@@ -122,6 +122,31 @@ async function refreshHealth() {
   }
 }
 
+async function refreshBoardChoices() {
+  const select = $("boardTarget");
+  try {
+    const state = await chrome.runtime.sendMessage({ type: "TF_LIST_BOARDS" });
+    select.replaceChildren();
+    const auto = document.createElement("option");
+    auto.value = "auto";
+    auto.textContent = state?.targetId ? "Automatic (last board)" : "Automatic";
+    select.appendChild(auto);
+    for (const tab of state?.tabs || []) {
+      const option = document.createElement("option");
+      option.value = String(tab.id);
+      option.textContent = tab.label;
+      select.appendChild(option);
+    }
+    select.value = state?.pinnedId != null ? String(state.pinnedId) : "auto";
+    if (!Array.from(select.options).some((o) => o.value === select.value)) {
+      select.value = "auto";
+    }
+    select.disabled = !state?.tabs?.length;
+  } catch {
+    select.disabled = true;
+  }
+}
+
 async function refreshStats() {
   try {
     const s = await chrome.runtime.sendMessage({ type: "TF_STATS" });
@@ -216,7 +241,11 @@ async function init() {
   $("token").value = settings.token || "";
   $("stabilityMs").value = settings.stabilityMs || 2000;
 
-  await Promise.all([detectPlatform(), refreshHealth(), refreshStats(), loadSession()]);
+  try {
+    const version = chrome.runtime.getManifest?.().version;
+    if (version) $("extensionVersion").textContent = `v${version} · Exact Q+A → one node`;
+  } catch { /* preview/testing environment */ }
+  await Promise.all([detectPlatform(), refreshHealth(), refreshBoardChoices(), refreshStats(), loadSession()]);
 }
 
 // ---- events ----------------------------------------------------------------
@@ -232,6 +261,24 @@ $("captureToggle").addEventListener("click", async () => {
       ? "Extension capture ON (website panel must also be ON)."
       : "Extension capture OFF."
   );
+});
+
+$("boardTarget").addEventListener("change", async (e) => {
+  const value = e.target.value;
+  const tabId = value === "auto" ? null : Number(value);
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "TF_PIN_BOARD", tabId });
+    if (!result?.ok) {
+      setStatus("Could not select board: " + (result?.reason || "tab closed"));
+    } else {
+      setStatus(value === "auto"
+        ? "Using most recently opened ThoughtFlow board."
+        : "Capture destination: " + result.target);
+    }
+  } catch (error) {
+    setStatus("Could not select board: " + (error?.message || "unavailable"));
+  }
+  await Promise.all([refreshBoardChoices(), refreshHealth()]);
 });
 
 $("direction").addEventListener("change", async (e) => {

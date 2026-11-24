@@ -1,3 +1,87 @@
+## v1.2.5 test candidate — ChatGPT semantic capture + explicit hosted destination
+
+This candidate addresses two **separate** user-observed failures.
+
+**ChatGPT:** The earlier universal detector could select
+`universal-alternating` whenever guessed markdown/code blocks produced more
+apparent Q+A pairs than real role-marked ChatGPT turns. This may pair unrelated
+text, import incorrect fragments, or miss the latest answer. ChatGPT now
+rejects this generic strategy, preferring its native role/testid/article
+extraction; if incomplete, only a semantically identified role/turn strategy
+may rescue it. The native ChatGPT selector compares all supported semantic
+views and chooses a view with more complete Q+A pairs or a much longer
+answer for the same newest question.
+
+**Live delivery:** The live-only policy remains intact. A temporary
+`busy`, `bridge-timeout`, `app-timeout`, `bridge-unavailable`, or
+`error` response is retried at most twice, in memory, only in the
+active chat and within 20 seconds of first failure. A website that is
+closed or Capture OFF does **not** queue old conversations. Existing
+Gemini native selectors are not modified.
+
+**Hosted routing:** The user's popup still showed `Connected (direct)`
+even though main v1.2.4's popup was supposed to report `Connected
+(GitHub Pages)` or `Connected (localhost)`. This strongly suggests
+an unpacked extension reload/version mismatch. v1.2.5 prominently displays
+its loaded version in the popup. It also adds a **Send to** dropdown:
+`GitHub Pages`, `localhost`, or `Automatic`. An explicit choice pins
+that board even if the user activates other tabs. If no board is chosen,
+the existing last-activated board remains preferred; otherwise the hosted
+site takes precedence when both are open. Only **one** board receives a
+given capture. This does **not** sync mind maps across different origins.
+
+**Hosted website:** In the live screenshots, its DOM bridge was `ready`
+and the panel acknowledged `enabled: true, hasStartNode: true`. That
+proves only bridge and panel readiness, **not Q+A delivery**.
+The published `gh-pages` bundle has not necessarily been rebuilt from
+current `main`. Browser delivery still must be verified.
+
+### Required manual test — do not merge before it passes
+
+1. Save/commit any local changes and test this branch:
+   `git fetch origin fix/chatgpt-trusted-pairing-live-delivery-2026-11-24`
+   and
+   `git switch -c qa-routing-test origin/fix/chatgpt-trusted-pairing-live-delivery-2026-11-24`.
+2. Reload the unpacked ThoughtFlow extension at `chrome://extensions`.
+   **The popup must say v1.2.5.** If not, the browser is running a
+   different extension folder; fix this before any other test.
+3. Open GitHub Pages ThoughtFlow with Capture ON and a Start Node selected.
+   In the extension popup choose **Send to → GitHub Pages**.
+   **Connection must say Connected (GitHub Pages)**.
+4. In ChatGPT, type a NEW question with a multi-paragraph answer and
+   a code block. Verify one new hosted node containing the whole answer.
+   Repeat with a second distinct question. Reopen old chat history; no
+   old nodes should import.
+5. Use `Send to → localhost`, ask another new question, and verify
+   it appears only on localhost. Switch back to hosted for normal use.
+6. Ask one new question in Gemini and verify exactly one complete Q+A
+   on GitHub Pages, then on localhost. Its selector was not changed.
+
+If live ChatGPT capture still fails, inspect the popup's hidden Diagnostics
+for `AI detector` pair count, `history-ignored`, `live-turn`,
+`answer-seen`, `send`, `live-retry`, `direct-ok`, `live-drop`.
+A healthy popup/bridge alone never proves end-to-end capture.
+
+### Automated regressions (simulated DOM, not a live browser)
+
+```bash
+node chrome-extension/test/chatgpt-semantic-pairing.mjs
+node chrome-extension/test/live-transient-retry.mjs
+node chrome-extension/test/two-board-routing.mjs
+node chrome-extension/test/live-only-no-history.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+node chrome-extension/test/universal-qa-detector.mjs
+node chrome-extension/test/universal-capture-pipeline.mjs
+```
+
+**Limits:** This candidate does not prove compatibility with the
+current live ChatGPT DOM. The assistant cannot directly access the
+user's Chrome session, so the live test above is mandatory. Do not
+merge or deploy until verified. No historical notes are deleted.
+
+---
+
 ## GitHub Pages vs localhost board selection — v1.2.4 (experimental)
 
 **Observed:** ThoughtFlow works at `http://localhost:5173/Thought_Flow2/`

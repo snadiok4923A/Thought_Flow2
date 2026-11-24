@@ -91,10 +91,14 @@
     // On an opt-in unknown website, only accept explicit role markers.
     // Blindly assuming arbitrary content blocks alternate user/assistant is
     // unsafe: it can collect unrelated private page text.
+    let fallbackMode = "none";
+    try { fallbackMode = fallback?.probeStrategy?.() || "none"; } catch { /* optional */ }
     let genericValid = genericPairs > 0;
-    if (!isKnownHost && genericValid) {
-      try { genericValid = fallback?.probeStrategy?.() === "roles"; }
-      catch { genericValid = false; }
+    if (!isKnownHost && genericValid) genericValid = fallbackMode === "roles";
+    // Arbitrary markdown fragments are NOT reliable ChatGPT Q+A turns.
+    // They can outnumber real messages and make the wrong extractor win.
+    if (platform === "chatgpt" && genericValid) {
+      genericValid = fallbackMode === "roles" || fallbackMode === "turns";
     }
     // ChatGPT's visible answer may span several rich-text/code containers.
     // If both extraction paths agree on the latest user question, prefer a
@@ -103,8 +107,6 @@
     if (platform === "chatgpt" && nativePairs > 0 && genericValid) {
       const nativeLast = latestPair(nativeRows);
       const genericLast = latestPair(genericRows);
-      let fallbackMode = "";
-      try { fallbackMode = fallback?.probeStrategy?.() || ""; } catch { fallbackMode = ""; }
       if (nativeLast && genericLast &&
           questionKey(nativeLast.question) === questionKey(genericLast.question) &&
           (fallbackMode === "roles" || fallbackMode === "turns") &&
@@ -113,12 +115,14 @@
       }
     }
 
-    if (nativePairs > 0 && (!genericValid || genericPairs <= nativePairs)) {
+    // A verified ChatGPT native pair beats higher counts from generic DOM.
+    // Only the matching-question fuller-answer exception above can replace it.
+    if (nativePairs > 0 && (platform === "chatgpt" ||
+        !genericValid || genericPairs <= nativePairs)) {
       return { rows: nativeRows, mode: "native", pairs: nativePairs };
     }
     if (genericValid) {
-      const mode = fallback?.probeStrategy?.() || "fallback";
-      return { rows: genericRows, mode: "universal-" + mode, pairs: genericPairs };
+      return { rows: genericRows, mode: "universal-" + fallbackMode, pairs: genericPairs };
     }
     // Preserve an incomplete transcript: the shared engine's MutationObserver
     // will detect the assistant when it appears.
