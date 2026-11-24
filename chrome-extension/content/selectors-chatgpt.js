@@ -130,6 +130,8 @@ globalThis.TF_SELECTORS = (function () {
     });
   }
 
+  let chosenMode = "none";
+
   return {
     platform: "chatgpt",
     label: "ChatGPT",
@@ -172,18 +174,22 @@ globalThis.TF_SELECTORS = (function () {
         return { q: q.trim(), a: a.trim() };
       };
       let out = [];
-      for (const candidate of strategies) {
+      const modes = ["author-role", "testid", "article"];
+      for (let i = 0; i < strategies.length; i++) {
+        const candidate = strategies[i];
         const cp = count(candidate);
         const op = count(out);
-        if (cp > op) { out = candidate; continue; }
+        if (cp > op) { out = candidate; chosenMode = modes[i]; continue; }
         if (cp < op) continue;
         const a = latest(out), b = latest(candidate);
         // For the SAME newest user turn, prefer the complete answer instead
         // of a tiny fragment or a stale view of the assistant body.
         if (b.q && b.q === a.q && b.a.length > a.a.length * 1.35 + 30) {
           out = candidate;
+          chosenMode = modes[i];
         } else if (!out.length && candidate.length) {
           out = candidate;
+          chosenMode = modes[i];
         }
       }
       return out.filter((m) => m && m.text)
@@ -192,10 +198,7 @@ globalThis.TF_SELECTORS = (function () {
 
     // Which strategy matched — surfaced in diagnostics.
     probeStrategy: function () {
-      if (collectByAuthorRole().length) return "author-role";
-      if (collectByTestIds().length) return "testid";
-      if (collectByArticles().length) return "article";
-      return "none";
+      return chosenMode;
     },
 
     // True while the model is still generating (multi-indicator).
