@@ -150,29 +150,44 @@ globalThis.TF_SELECTORS = (function () {
       }
     },
 
-    // All chat messages in document order; first strategy that yields
-    // results wins, so only one representation is ever used per scan.
+    // Evaluate all SEMANTIC ChatGPT extractors, not "first pair wins".
+    // An earlier Q+A in the author-role view must not hide a NEW reply that
+    // is only visible through a conversation-turn or article view.
     collectMessages: function () {
-      // A partial author-role strategy (only user bubbles, for example)
-      // must not block fallback to a strategy that sees assistant replies.
-      let out = collectByAuthorRole();
-      const complete = (rows) => rows.some((m) => m.role === "user") &&
-        rows.some((m) => m.role === "assistant");
-      if (!complete(out)) {
-        const testIds = collectByTestIds();
-        if (complete(testIds) || testIds.length > out.length) out = testIds;
+      const strategies = [collectByAuthorRole(), collectByTestIds(), collectByArticles()];
+      const count = (rows) => {
+        let n = 0, pending = false;
+        for (const row of rows) {
+          if (row.role === "user") pending = true;
+          else if (pending && row.role === "assistant") { n++; pending = false; }
+        }
+        return n;
+      };
+      const latest = (rows) => {
+        let q = "", a = "";
+        for (const row of rows) {
+          if (row.role === "user") { q = row.text || ""; a = ""; }
+          else if (q && row.role === "assistant") a = row.text || "";
+        }
+        return { q: q.trim(), a: a.trim() };
+      };
+      let out = [];
+      for (const candidate of strategies) {
+        const cp = count(candidate);
+        const op = count(out);
+        if (cp > op) { out = candidate; continue; }
+        if (cp < op) continue;
+        const a = latest(out), b = latest(candidate);
+        // For the SAME newest user turn, prefer the complete answer instead
+        // of a tiny fragment or a stale view of the assistant body.
+        if (b.q && b.q === a.q && b.a.length > a.a.length * 1.35 + 30) {
+          out = candidate;
+        } else if (!out.length && candidate.length) {
+          out = candidate;
+        }
       }
-      if (!complete(out)) {
-        const articles = collectByArticles();
-        if (complete(articles) || articles.length > out.length) out = articles;
-      }
-      return out
-        .filter(function (m) {
-          return m && m.text;
-        })
-        .map(function (m) {
-          return { role: m.role, text: m.text, id: m.id };
-        });
+      return out.filter((m) => m && m.text)
+        .map((m) => ({ role: m.role, text: m.text, id: m.id }));
     },
 
     // Which strategy matched — surfaced in diagnostics.
