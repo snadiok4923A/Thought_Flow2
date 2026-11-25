@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.2.5",
-  "description": "Live Q+A capture with trusted ChatGPT message pairing and explicit ThoughtFlow destination selection.",
+  "version": "1.2.6",
+  "description": "Live AI Q+A capture supporting ChatGPT 2026 Chat/Work turn markup and Gemini, with explicit board targeting.",
   "permissions": [
     "storage",
     "alarms",
