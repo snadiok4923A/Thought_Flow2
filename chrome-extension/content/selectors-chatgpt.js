@@ -8,6 +8,8 @@
 //   B. [data-testid="user-message"] /
 //      [data-testid="conversation-turn-*"]       (current testid layer)
 //   C. article .markdown structure                (last-resort structural)
+//   D. 2026 Chat/Work role-marked search units: data-content-search-unit-key
+//      / data-conversation-role / data-turn-key (account-specific new UI)
 // Streaming detection likewise tries several indicators and has a
 // "stable-too-long" override in capture-core so a stuck indicator cannot
 // block capture forever.
@@ -130,6 +132,50 @@ globalThis.TF_SELECTORS = (function () {
     });
   }
 
+  // Strategy D — new ChatGPT Chat/Work markup (September 2026 onward).
+  // Some logged-in accounts no longer render [data-message-author-role],
+  // conversation-turn-N or article at all. The actual user/assistant role
+  // lives on a content-search unit or a data-conversation-role wrapper.
+  // These are explicit semantic role markers, NOT guessed markdown blocks.
+  function collectBySearchUnits() {
+    let roots = Array.from(document.querySelectorAll(
+      '[data-content-search-unit-key], [data-chatgpt-search-unit-key]'
+    ));
+    if (!roots.length) roots = Array.from(document.querySelectorAll('[data-conversation-role]'));
+    if (!roots.length) roots = Array.from(document.querySelectorAll(
+      '[data-turn-key][data-conversation-role]'
+    ));
+    const out = [];
+    const used = new Set();
+    for (const root of roots) {
+      const unitKey = root.getAttribute("data-content-search-unit-key") ||
+        root.getAttribute("data-chatgpt-search-unit-key") || "";
+      const namedRole = root.getAttribute("data-conversation-role") ||
+        root.querySelector?.('[data-conversation-role]')?.getAttribute("data-conversation-role") || "";
+      let role = (unitKey.match(/:(user|assistant)$/i) || [])[1]?.toLowerCase();
+      if (!role) role = /^(user|assistant)$/i.test(namedRole) ? namedRole.toLowerCase() : "";
+      if (!role) continue;
+      if (root.closest?.('form[data-chatgpt-composer]')) continue;
+      const body = role === "user"
+        ? root.querySelector?.('[data-user-message-bubble="true"], [data-conversation-role="user"]') || root
+        : root.querySelector?.('[data-conversation-role="assistant"]') || root;
+      // Keep the entire assistant container (including code blocks), rather
+      // than just its first .markdown paragraph.
+      const text = textOf(body);
+      if (!text) continue;
+      const id = unitKey || root.getAttribute("data-turn-key") ||
+        root.getAttribute("data-message-id") || "";
+      // A turn can expose both a wrapper and a nested role element.
+      // Never interpret the nested element as another Q+A turn.
+      const identity = id || root;
+      if (used.has(identity)) continue;
+      used.add(identity);
+      out.push({ el: root, role, text, id });
+    }
+    out.sort(posSort);
+    return out;
+  }
+
   let chosenMode = "none";
 
   return {
@@ -156,7 +202,10 @@ globalThis.TF_SELECTORS = (function () {
     // An earlier Q+A in the author-role view must not hide a NEW reply that
     // is only visible through a conversation-turn or article view.
     collectMessages: function () {
-      const strategies = [collectByAuthorRole(), collectByTestIds(), collectByArticles()];
+      const strategies = [
+        collectBySearchUnits(), collectByAuthorRole(),
+        collectByTestIds(), collectByArticles(),
+      ];
       const count = (rows) => {
         let n = 0, pending = false;
         for (const row of rows) {
@@ -174,7 +223,7 @@ globalThis.TF_SELECTORS = (function () {
         return { q: q.trim(), a: a.trim() };
       };
       let out = [];
-      const modes = ["author-role", "testid", "article"];
+      const modes = ["search-unit", "author-role", "testid", "article"];
       for (let i = 0; i < strategies.length; i++) {
         const candidate = strategies[i];
         const cp = count(candidate);

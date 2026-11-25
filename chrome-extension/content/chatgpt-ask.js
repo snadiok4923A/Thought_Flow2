@@ -58,6 +58,7 @@
 
   function composer() {
     return document.querySelector(
+      'form[data-chatgpt-composer] [contenteditable="true"][role="textbox"], ' +
       '#prompt-textarea[contenteditable="true"], ' +
       '[data-testid="composer-input"][contenteditable="true"], ' +
       '[contenteditable="true"]#prompt-textarea, ' +
@@ -67,6 +68,7 @@
 
   function findSendButton() {
     return document.querySelector(
+      'form[data-chatgpt-composer] button[type="submit"], ' +
       'button[data-testid="send-button"], ' +
       'button[data-testid="composer-send-button"], ' +
       'button[aria-label="Send prompt"], ' +
