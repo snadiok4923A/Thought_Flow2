@@ -286,6 +286,7 @@
     // Notes-originated requests, which explicitly mark intent before click.
     function readChatGPTComposer() {
       const el = document.querySelector?.(
+        'form[data-chatgpt-composer] [contenteditable="true"][role="textbox"], ' +
         '#prompt-textarea, [data-testid="composer-input"], .ProseMirror[contenteditable="true"]'
       );
       return el ? (el.value || el.innerText || el.textContent || "") : "";
@@ -295,15 +296,23 @@
       document.addEventListener("click", (event) => {
         const send = event.target?.closest?.(
           'button[data-testid="send-button"], button[data-testid="composer-send-button"], ' +
-          'button[aria-label="Send prompt"], button[aria-label="Send message"], button[aria-label="Send"]'
+          'button[aria-label="Send prompt"], button[aria-label="Send message"], button[aria-label="Send"], ' +
+          'form[data-chatgpt-composer] button[type="submit"]'
         );
         if (send) markSubmittedQuestion(readChatGPTComposer());
+      }, true);
+      // The 2026 Chat/Work composer may use a form submit without any
+      // legacy send-button identifier.
+      document.addEventListener("submit", (event) => {
+        if (event.target?.matches?.('form[data-chatgpt-composer]'))
+          markSubmittedQuestion(readChatGPTComposer());
       }, true);
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" || event.shiftKey || event.isComposing ||
             event.altKey || event.ctrlKey || event.metaKey) return;
         const inComposer = event.target?.closest?.(
-          '#prompt-textarea, [data-testid="composer-input"], .ProseMirror[contenteditable="true"]'
+          '#prompt-textarea, [data-testid="composer-input"], .ProseMirror[contenteditable="true"], ' +
+          'form[data-chatgpt-composer] [contenteditable="true"][role="textbox"]'
         );
         if (inComposer) markSubmittedQuestion(readChatGPTComposer());
       }, true);
