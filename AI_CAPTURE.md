@@ -1,3 +1,75 @@
+## ChatGPT Chat/Work DOM compatibility — Extension v1.2.6
+
+**Observed problem:** Gemini capture can work while ChatGPT capture fails,
+even though the ThoughtFlow bridge is `ready` and the panel acknowledges
+`enabled:true`. A connected bridge alone does not prove ChatGPT answer
+extraction.
+
+**External evidence:** In September 2026, another ChatGPT integration
+documented a per-account Chat/Work layout with **none** of the former
+`[data-message-author-role]`, `[data-testid^="conversation-turn-"]`,
+`article`, or `#prompt-textarea` markers. New markers included
+`[data-content-search-unit-key$=":user"]`,
+`[data-content-search-unit-key$=":assistant"]`,
+`[data-user-message-bubble="true"]`, `[data-conversation-role]`,
+and `form[data-chatgpt-composer] [role="textbox"][contenteditable="true"]`.
+This is **not yet proven to be the user's specific account layout**.
+See https://github.com/steipete/oracle/issues/517.
+
+**Changes (isolated to ChatGPT, not Gemini):**
+- Add semantic `search-unit` extraction based on explicitly role-labelled
+  user/assistant units. Preserve full assistant text including code
+  instead of collecting one markdown paragraph, and deduplicate nested
+  wrappers by identity.
+- Compare the new semantic view against existing author-role/testid/article
+  strategies so legacy ChatGPT continues to work.
+- Listen for live user submission from the new Chat/Work ProseMirror
+  composer, including form submit, Enter, and submit-button click.
+  Existing live-only input-gating remains: visiting old chats does NOT
+  import history.
+- Update Notes → Ask ChatGPT's editor and send-button lookup for the
+  same new composer.
+- Bump extension to v1.2.6. The website bundle need not change for this
+  ChatGPT DOM extractor update; the *unpacked extension must be reloaded*.
+
+**Regression checks:**
+```bash
+node chrome-extension/test/chatgpt-2026-search-unit-live.mjs
+node chrome-extension/test/chatgpt-semantic-pairing.mjs
+node chrome-extension/test/chatgpt-first-turn-baseline.mjs
+node chrome-extension/test/live-only-no-history.mjs
+node chrome-extension/test/notes-answer-capture.mjs
+node chrome-extension/test/universal-capture-pipeline.mjs
+node chrome-extension/test/universal-qa-detector.mjs
+```
+These tests use **synthetic DOM**, not the user's logged-in browser.
+A real-browser check is still required to verify that the user's
+specific ChatGPT interface has matching markers.
+
+**Install/test:**
+1. Commit/stash local edits before updating. Pull `main` after merge,
+   or check out the repair branch while still under review.
+2. Go to `chrome://extensions` → ThoughtFlow AI Capture → **Details**
+   and verify its unpacked directory is your updated
+   `Thought_Flow2/chrome-extension` folder (not an older duplicate).
+   Click **Reload**. The popup **must show v1.2.6**.
+3. Refresh the ChatGPT tab. Keep the target ThoughtFlow page open,
+   Capture ON, Start Node selected.
+4. In the popup choose **Send to → GitHub Pages** (or localhost).
+   Connection should show that *exact destination*.
+5. Type a completely new question with code in ChatGPT. Wait for the
+   answer to finish, then check that one new node contains the full Q+A.
+   Do not test by reopening an old conversation: live-only intentionally
+   ignores historical chats.
+6. If it still fails, open the extension popup's Diagnostics and inspect
+   the actual `scan` message/pair count and `send`/`direct-ok` events;
+   do not create more speculative patches without the user's actual
+   page-specific DOM diagnostics.
+
+No old saved Notes are deleted and no chat-history replay is enabled.
+
+---
+
 ## v1.2.5 test candidate — ChatGPT semantic capture + explicit hosted destination
 
 This candidate addresses two **separate** user-observed failures.
