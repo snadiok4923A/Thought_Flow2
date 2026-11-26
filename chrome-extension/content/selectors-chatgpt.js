@@ -21,27 +21,76 @@ globalThis.TF_SELECTORS = (function () {
     return rel & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
   }
 
-  function textOf(el) {
-    return (el && el.innerText ? el.innerText : "").trim();
+  // ChatGPT renders a visually hidden speaker heading ("ChatGPT said:" /
+  // "You said:") inside its message containers. It is interface chrome, not
+  // content. When it was treated as answer text, a turn that had not rendered
+  // its body yet was saved as a node whose Notes were only the question plus
+  // "ChatGPT said:" — and because that label never grows, the real answer was
+  // never delivered as an update.
+  const SPEAKER_LABELS = [
+    "chatgpt said:", "chatgpt said",
+    "you said:", "you said",
+    "assistant said:", "assistant said",
+    "user said:", "user said",
+    "gemini said:", "gemini said",
+    "claude said:", "claude said",
+    "model said:", "model said",
+  ];
+
+  function stripSpeakerLabels(raw) {
+    const text = String(raw || "");
+    if (!text.trim()) return "";
+    const kept = text.split(/\r?\n/).filter(function (line) {
+      const key = line.trim().toLowerCase().replace(/\s+/g, " ");
+      return SPEAKER_LABELS.indexOf(key) === -1;
+    });
+    // Drop blank runs left behind by a removed heading; keep real spacing.
+    return kept.join("\n").replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
   }
 
-  // One assistant turn can have several markdown/code blocks. Selecting
-  // only its FIRST .markdown misses the rest of the visible answer.
-  // Prefer the complete role-marked body; if only a partial markdown block
-  // is available, use the entire assistant turn when it is substantially
-  // longer (for example, a multi-part Python coding response).
+  function textOf(el) {
+    return stripSpeakerLabels(el && el.innerText ? el.innerText : "");
+  }
+
+  // Every complete answer body inside one turn. ChatGPT nests .markdown inside
+  // .prose inside the role wrapper, so nested duplicates are dropped while
+  // separate markdown / code-block containers are all kept.
+  function assistantBodies(turn) {
+    const found = Array.prototype.slice.call(
+      (turn.querySelectorAll
+        ? turn.querySelectorAll(
+            '[data-message-author-role="assistant"], [data-message-content], ' +
+              '.markdown, .prose, [class*="markdown"], [class*="prose"]'
+          )
+        : []) || []
+    );
+    return found.filter(function (el) {
+      return !found.some(function (other) {
+        return other !== el && other.contains && other.contains(el);
+      });
+    });
+  }
+
+  // One assistant turn can have several markdown/code blocks. Selecting only
+  // its FIRST .markdown misses the rest of the visible answer, and selecting
+  // the first non-empty wrapper can select the speaker label alone.
+  // Merge every outer body in document order instead.
   function assistantTurnContent(turn) {
-    const roleBody = turn.querySelector('[data-message-author-role="assistant"]');
-    if (roleBody && textOf(roleBody)) {
-      return { el: roleBody, text: textOf(roleBody) };
+    const bodies = assistantBodies(turn);
+    const parts = [];
+    let el = turn;
+    for (const body of bodies) {
+      const text = textOf(body);
+      if (!text) continue;
+      parts.push(text);
+      if (el === turn) el = body;
     }
-    const markdown = turn.querySelector(".markdown, .prose");
-    const snippet = markdown ? textOf(markdown) : "";
-    const entire = textOf(turn);
-    if (entire.length > snippet.length + 80 && entire.length > snippet.length * 1.5) {
-      return { el: turn, text: entire };
+    if (parts.length) {
+      // The outermost body already contains every nested block; joining the
+      // remaining outer bodies keeps split code/markdown containers complete.
+      return { el, text: parts.join("\n\n") };
     }
-    return { el: markdown || turn, text: snippet || entire };
+    return { el: turn, text: textOf(turn) };
   }
 
   // Strategy A — data-message-author-role (single container per message)
@@ -52,12 +101,14 @@ globalThis.TF_SELECTORS = (function () {
     nodes.forEach(function (el) {
       const role = el.getAttribute("data-message-author-role");
       if (role !== "user" && role !== "assistant") return;
-      const text = textOf(el);
-      if (!text) return;
+      const body = role === "assistant"
+        ? assistantTurnContent(el)
+        : { el: el, text: textOf(el) };
+      if (!body.text) return;
       out.push({
-        el: el,
+        el: body.el,
         role: role,
-        text: text,
+        text: body.text,
         id: el.getAttribute("data-message-id") || "",
       });
     });
@@ -112,7 +163,7 @@ globalThis.TF_SELECTORS = (function () {
     const bucket = [];
     document.querySelectorAll("main article, article").forEach(function (art) {
       if (art.querySelector("textarea, [contenteditable='true']")) return; // composer
-      const md = art.querySelector(".markdown, .prose");
+      const md = art.querySelector(".markdown, .prose, [class*='markdown']");
       if (md) {
         const body = assistantTurnContent(art);
         bucket.push({ el: body.el, role: "assistant", text: body.text });
@@ -156,12 +207,12 @@ globalThis.TF_SELECTORS = (function () {
       if (!role) role = /^(user|assistant)$/i.test(namedRole) ? namedRole.toLowerCase() : "";
       if (!role) continue;
       if (root.closest?.('form[data-chatgpt-composer]')) continue;
+      // Keep the entire assistant body (every markdown/code block), never a
+      // label-only wrapper that happens to render first.
       const body = role === "user"
         ? root.querySelector?.('[data-user-message-bubble="true"], [data-conversation-role="user"]') || root
-        : root.querySelector?.('[data-conversation-role="assistant"]') || root;
-      // Keep the entire assistant container (including code blocks), rather
-      // than just its first .markdown paragraph.
-      const text = textOf(body);
+        : null;
+      const text = role === "user" ? textOf(body) : assistantTurnContent(root).text;
       if (!text) continue;
       const id = unitKey || root.getAttribute("data-turn-key") ||
         root.getAttribute("data-message-id") || "";

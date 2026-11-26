@@ -1,3 +1,63 @@
+## ChatGPT question-only notes ("ChatGPT said:") — Extension v1.2.7
+
+**Observed problem:** a new ChatGPT turn produced a node whose Notes were
+just the question followed by `ChatGPT said:` — the answer never arrived.
+Gemini was unaffected.
+
+**Confirmed root cause (not a guess):** ChatGPT renders a visually hidden
+speaker heading (`ChatGPT said:` / `You said:`) *inside* each message
+container. `selectors-chatgpt.js` → `assistantTurnContent()` accepted the
+**first non-empty** assistant candidate and returned immediately. During
+streaming that candidate is the label wrapper, so:
+
+- the label passed every "has text" check in `capture-core.js` and became `p.answer`;
+- the element holding the label never receives the answer, so the answer text
+  never grew and no "answer grew → update node" resend could ever happen;
+- the app accepted it because only truly empty answers are rejected
+  (`App.jsx` → `reason: 'invalid'`), and `buildCaptureNoteHtml()` writes the
+  answer verbatim, so the label landed in Notes.
+
+The answer itself was present in the DOM the whole time — in `.markdown`
+siblings that were never selected.
+
+**Changes:**
+- `content/selectors-chatgpt.js`
+  - `stripSpeakerLabels()` + label-aware `textOf()`: whole lines that are only
+    a role label are removed for both roles; inline mentions in real prose are kept.
+  - `assistantBodies()` / rewritten `assistantTurnContent()`: collect every
+    outer answer body (role wrapper, `.markdown`, `.prose`, `[class*="markdown"]`,
+    `[data-message-content]`), drop nested duplicates, merge split markdown/code
+    containers in document order instead of returning the first non-empty one.
+  - Strategy A (author-role) and strategy D (2026 search units) now read the
+    assistant turn through the same complete-body extractor.
+- `content/capture-core.js`: `isSpeakerLabelOnly()` guard. A label-only
+  assistant body is not an answer — the scan logs `answer-label-wait` and keeps
+  waiting (it does not consume the live-typed intent), so the real answer is
+  captured once and completely.
+- Version 1.2.7. Gemini selectors and pipeline untouched; website bundle
+  unchanged by this extractor fix.
+
+**Regression checks (automated, synthetic DOM):**
+```bash
+node chrome-extension/test/chatgpt-speaker-label-extraction.mjs
+node chrome-extension/test/chatgpt-complete-answer-delivery.mjs
+node chrome-extension/test/chatgpt-full-answer-quality.mjs
+node chrome-extension/test/chatgpt-semantic-pairing.mjs
+node chrome-extension/test/chatgpt-2026-search-unit-live.mjs
+node chrome-extension/test/gemini-clean-capture.mjs
+node chrome-extension/test/direct-turn-decision.mjs
+```
+Real-browser verification with a signed-in ChatGPT session is still required;
+see "Remaining limitations" in the release notes.
+
+**Install/test:**
+1. `chrome://extensions` → ThoughtFlow AI Capture → **Reload**; popup must show **v1.2.7**.
+2. Refresh the ChatGPT tab (content scripts are reinjected, old ones are idle).
+3. Keep the ThoughtFlow tab open, Capture ON, Start Node selected, destination chosen.
+4. Ask a brand-new question (with a code block). Expect one node, Notes =
+   question, blank line, full answer, no role labels. If the answer streams,
+   the same node is updated rather than duplicated.
+
 ## ChatGPT Chat/Work DOM compatibility — Extension v1.2.6
 
 **Observed problem:** Gemini capture can work while ChatGPT capture fails,

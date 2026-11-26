@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ThoughtFlow AI Capture",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Live AI Q+A capture supporting ChatGPT 2026 Chat/Work turn markup and Gemini, with explicit board targeting.",
   "permissions": [
     "storage",

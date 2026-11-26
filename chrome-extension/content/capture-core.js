@@ -78,6 +78,17 @@
     );
   }
 
+  // A speaker heading ("ChatGPT said:") is interface chrome, never an answer.
+  // Saving it produced notes with only the question and that label while the
+  // real answer was still rendering — and a label never grows, so no update
+  // could ever repair the note.
+  const SPEAKER_LABEL_ONLY =
+    /^(?:you|chatgpt|gemini|claude|assistant|user|model|ai)\s+said$/i;
+
+  function isSpeakerLabelOnly(text) {
+    return SPEAKER_LABEL_ONLY.test(normalize(text).replace(/[\s:]+$/, ""));
+  }
+
   function start(selectors) {
     if (!selectors || typeof selectors.collectMessages !== "function") return;
     if (!selectors.isSupportedPage()) return;
@@ -506,6 +517,13 @@
               normalize(p.question).toLowerCase() === normalize(p.answer).toLowerCase() &&
               p.answer.length <= 160) {
             dbg("answer-echo-wait", `q=${p.question.length}c a=${p.answer.length}c`);
+            return;
+          }
+          // The assistant container can exist before its body renders, with
+          // only ChatGPT's speaker heading inside. That is not an answer:
+          // wait for real text instead of saving a question-only note.
+          if (!normalize(p.answer) || isSpeakerLabelOnly(p.answer)) {
+            dbg("answer-label-wait", `q=${p.question.length}c a=${p.answer.length}c`);
             return;
           }
           const fp = pairFingerprint(selectors.platform, state.convId, p);
