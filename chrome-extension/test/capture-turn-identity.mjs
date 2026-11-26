@@ -37,8 +37,22 @@ function advance(ms) {
 }
 
 let messages = [];
+const events = new Map();
+function type(text) {
+  // Live-only capture unlocks a turn only from a real user submission, so the
+  // fixture must simulate the composer input event like a person typing.
+  const target = { closest() { return { value: text }; } };
+  for (const cb of events.get("input") || []) cb({ target });
+}
 const ctx = {
-  document: { documentElement: {}, addEventListener() {}, querySelector() { return null; } },
+  document: {
+    documentElement: {},
+    addEventListener(kind, cb) {
+      if (!events.has(kind)) events.set(kind, []);
+      events.get(kind).push(cb);
+    },
+    querySelector() { return null; },
+  },
   location: { host: "chatgpt.com" },
   sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
   Date: { now: () => now },
@@ -81,6 +95,7 @@ advance(100);
 assert.equal(sent.length, 0);
 
 // Split assistant rows (markdown body + code block) must be merged.
+type("Explain closures");
 messages = [
   { role: "user", text: "Explain closures", id: "u1" },
   { role: "assistant", text: "A closure captures its scope.", id: "a1" },
@@ -111,6 +126,7 @@ advance(20000);
 assert.equal(sent.length, 2, "id churn does not resend");
 
 // A repeated identical question is a separate turn with its own node.
+type("Explain closures");
 messages = messages.concat([
   { role: "user", text: "Explain closures", id: "u2" },
   { role: "assistant", text: "Same question, second answer.", id: "a3" },

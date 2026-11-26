@@ -115,10 +115,10 @@ let nextId = 0;
 let mutation;
 let currentAnswer = "Another";
 const timers = new Map();
-const messages = [
-  { role: "user", text: question, id: "u" },
-  { role: "assistant", text: currentAnswer, id: "a" },
-];
+// Start empty: the user types BEFORE ChatGPT renders the turn, exactly like
+// a real send. Typing after the echo row exists would (correctly) look like
+// pre-existing history and stay ignored.
+const messages = [];
 const sent = [];
 const logs = [];
 const schedule = (fn, delay) => {
@@ -139,8 +139,22 @@ function advance(ms) {
   }
   now = until;
 }
+const events = new Map();
+function typeIntoComposer(text) {
+  // The shared engine is live-only: a turn is eligible only after real user
+  // input. Simulate the composer input event, not a promise that it happened.
+  const target = { closest() { return { value: text }; } };
+  for (const cb of events.get("input") || []) cb({ target });
+}
 const ctx = {
-  document: { documentElement: {}, addEventListener() {}, querySelector() { return null; } },
+  document: {
+    documentElement: {},
+    addEventListener(kind, cb) {
+      if (!events.has(kind)) events.set(kind, []);
+      events.get(kind).push(cb);
+    },
+    querySelector() { return null; },
+  },
   location: { host: "chatgpt.com" },
   sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
   Date: { now: () => now },
@@ -173,6 +187,12 @@ ctx.TFCapture.start({
   isStreaming: () => false,
   probeStrategy: () => "test",
 });
+typeIntoComposer(question);
+messages.push(
+  { role: "user", text: question, id: "u" },
+  { role: "assistant", text: currentAnswer, id: "a" }
+);
+mutation();
 advance(10000);
 assert.equal(sent.length, 0, "Echo should never become a standalone node");
 assert.ok(logs.some((e) => e.event === "answer-echo-wait"));

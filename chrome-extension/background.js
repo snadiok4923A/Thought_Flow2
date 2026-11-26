@@ -10,9 +10,6 @@
 
 importScripts("hosted-config.js", "utils/debug.js", "utils/api.js");
 
-const MAX_QUEUE = 50;
-const MAX_TRIES = 40; // ~20 min of retries at 30 s per flush — bridges most server restarts
-
 // NOTE: Chrome match patterns do NOT support ports — "http://localhost/*"
 // matches localhost on ANY port (5173, 5174, …). Never use :5173 here.
 const THOUGHTFLOW_URLS = [
@@ -25,30 +22,10 @@ function dbg(event, detail) {
   globalThis.TFDebug.log(event, detail);
 }
 
-// ---- Session gate -----------------------------------------------------------
-// The website panel owns capture state: it must be ON with a start node selected.
-async function sessionAllowsCapture() {
-  try {
-    const session = await TFApi.getSession();
-    const ok = !!(session && session.enabled && (session.rootNodeId || session.currentParentNodeId));
-    dbg("gate", ok ? "open" : `closed (enabled=${!!(session && session.enabled)} start=${(session && session.rootNodeId) || "-"})`);
-    return { ok, session, retry: false };
-  } catch (err) {
-    // Server unreachable — do not drop the pair; queue it and retry later.
-    dbg("gate", `api-unreachable (${err && err.message})`);
-    return { ok: false, retry: true };
-  }
-}
-
-// ---- Retry queue ------------------------------------------------------------
-async function getQueue() {
-  const { retryQueue = [] } = await chrome.storage.local.get("retryQueue");
-  return retryQueue;
-}
-
-async function setQueue(q) {
-  await chrome.storage.local.set({ retryQueue: q.slice(-MAX_QUEUE) });
-}
+// ---- Retry queue (retired) --------------------------------------------------
+// Live-only mode never replays a whole conversation: there is no durable
+// capture queue and no flush timer. Any legacy `retryQueue` value from older
+// versions is left untouched on disk, read-only, for diagnostics.
 
 async function bumpCounter() {
   // This is a LIVE session counter, not a historical archive.
@@ -63,32 +40,6 @@ async function bumpCounter() {
     /* action may be unavailable during install */
   }
   return next;
-}
-
-async function flushQueue() {
-  const queue = await getQueue();
-  if (!queue.length) return;
-
-  const gate = await sessionAllowsCapture();
-  if (gate.retry) return; // still offline
-
-  const remaining = [];
-  for (const entry of queue) {
-    if (!gate.ok) {
-      dbg("queue-drop", "website capture switched off");
-      continue; // OFF means no capture
-    }
-    try {
-      const res = await TFApi.postCapture(entry.payload);
-      dbg("queue-retry-ok", res && res.duplicate ? "duplicate" : "applied");
-      if (res && !res.duplicate) await bumpCounter();
-    } catch (err) {
-      dbg("queue-retry-fail", `HTTP ${err && err.status}`);
-      entry.tries = (entry.tries || 0) + 1;
-      if (entry.tries < MAX_TRIES) remaining.push(entry);
-    }
-  }
-  await setQueue(remaining);
 }
 
 // Automatically recover the content-script bridge when Brave/Chrome did not
