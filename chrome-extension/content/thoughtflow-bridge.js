@@ -45,17 +45,6 @@ function awaitAck(requestId, sendResponse) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return;
-  if (msg.type === "TF_NOTES_AI_RESULT") {
-    // An independent, short message from the background after ChatGPT finishes.
-    // Do not hold a chrome.runtime.sendMessage() port open during generation.
-    window.postMessage({
-      source: "thoughtflow-ask-chatgpt-result",
-      requestId: msg.requestId,
-      result: msg.result || { ok: false, error: "No response was received from ChatGPT." },
-    }, window.location.origin);
-    sendResponse({ received: true });
-    return;
-  }
   if (msg.type === "TF_CAPTURE_DIRECT") {
     const requestId = msg.requestId || String(Date.now());
     awaitAck(requestId, sendResponse);
@@ -100,43 +89,5 @@ window.addEventListener("message", (event) => {
 });
 
 
- // Notes -> ChatGPT -> SAME Notes editor (no additional mind-map node).
- // Never send automatically; only forward the deliberate Ask button event.
- window.addEventListener("message", (event) => {
-   if (event.source !== window || event.origin !== window.location.origin) return;
-   const data = event.data;
-   if (!data || data.source !== "thoughtflow-ask-chatgpt") return;
-   const requestId = data.requestId;
-   const question = typeof data.question === "string" ? data.question.trim() : "";
-   const respond = (result) => window.postMessage({
-     source: "thoughtflow-ask-chatgpt-result",
-     requestId,
-     result,
-   }, window.location.origin);
-   if (typeof requestId !== "string" || !requestId || !question || question.length > 12000) {
-     respond({ ok: false, error: "Enter a question of at most 12,000 characters." });
-     return;
-   }
-   try {
-     chrome.runtime.sendMessage({ type: "TF_ASK_CHATGPT", requestId, question }, (result) => {
-       const error = chrome.runtime.lastError?.message;
-       // Successful START is only an acknowledgement. The completed answer
-       // comes later via TF_NOTES_AI_RESULT, NOT on this message port.
-       if (error) {
-         respond({ ok: false, error: "Could not start ChatGPT: " + error });
-       } else if (!result?.ok || !result.started) {
-         respond({ ok: false, error: result?.error || "Extension could not start ChatGPT." });
-       } else {
-         // This is only progress feedback. Actual answer is delivered later.
-         window.postMessage({
-           source: "thoughtflow-ask-chatgpt-started",
-           requestId,
-         }, window.location.origin);
-       }
-     });
-   } catch (err) {
-     respond({ ok: false, error: err?.message || "Extension is unavailable." });
-   }
- });
 
 })();
