@@ -47,26 +47,6 @@
 
   const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
 
-  // Same compact question signature as background.js/chatgpt-ask.js.
-  // Used only to match an explicit Notes Ask with its returned Q+A pair.
-  function noteQuestionKey(question) {
-    const value = normalize(question);
-    let hash = 2166136261;
-    for (let i = 0; i < value.length; i++) {
-      hash ^= value.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return value.length + ":" + (hash >>> 0).toString(36);
-  }
-
-  function isPendingNotesQuestion(question) {
-    const plain = normalize(question);
-    return !!(
-      globalThis.__tfOutboundQuestions?.has(plain) ||
-      globalThis.__tfOutboundQuestionKeys?.has(noteQuestionKey(plain))
-    );
-  }
-
   // Stable turn identity: the same question at the same position in the same
   // conversation is ONE turn for its whole lifetime. DOM message ids are
   // remounted by the chat UIs and the answer grows while streaming, so neither
@@ -527,20 +507,10 @@
             return;
           }
           const fp = pairFingerprint(selectors.platform, state.convId, p);
-          // Do NOT discard questions originating in Notes. They must go
-          // through the normal, proven Q+A collector. The background router
-          // recognizes this explicit Notes question and routes its answer
-          // BACK to the existing Notes editor instead of making a child node.
-          // The explicit Notes Ask can authorize only the MOST RECENT
-          // matching Q+A. An older identical question is history, not a
-          // second answer to send or a new child node.
-          const pendingNote = selectors.platform === "chatgpt" &&
-            idx === lastIdx && isPendingNotesQuestion(p.question);
           const submittedNow = isRecentlySubmitted(p.question, idx, lastIdx, now);
           const fpWasLive = state.liveTurns.has(fp);
-          const live = pendingNote || submittedNow ||
-            liveTurnEligible(p, fp, idx, lastIdx, now);
-          if (!enabled && !pendingNote) return;
+          const live = submittedNow || liveTurnEligible(p, fp, idx, lastIdx, now);
+          if (!enabled) return;
           if (!live) {
             if (idx === lastIdx && !state.oldTurnsLogged.has(fp)) {
               state.oldTurnsLogged.add(fp);
@@ -566,14 +536,6 @@
           const retryAt = state.retryAfter.get(fp);
           if (retryAt && now < retryAt) return;
           if (retryAt && now >= retryAt) state.retryAfter.delete(fp);
-
-          // Capture OFF blocks normal auto-capture, but a deliberate Ask
-          // ChatGPT button press must still return its answer to that Note.
-          if (!enabled && !pendingNote) {
-            remember(fp);
-            dbg("skipped-off", `q=${p.question.length}c`);
-            return;
-          }
 
           const sig = hash(normalize(p.question) + "\u0001" + normalize(p.answer));
           let st = state.stats.get(fp);
@@ -641,31 +603,8 @@
       }, SCAN_DEBOUNCE_MS);
     }
 
-    // When ChatGPT navigates to a new conversation, the initial scan may
-    // have treated a newly answered question as existing history. The
-    // background sends the pending question signature on navigation, so
-    // unlock ONLY that Q+A pair for a normal settled capture scan.
-    globalThis.TFCapture.allowPendingNoteQuestion = (key) => {
-      if (typeof key !== "string" || !/^[0-9]+:[a-z0-9]+$/.test(key)) return;
-      const keys = globalThis.__tfOutboundQuestionKeys || new Set();
-      globalThis.__tfOutboundQuestionKeys = keys;
-      keys.add(key);
-      const { pairs } = collectPairs();
-      // Only the very latest completed exchange can be the question just
-      // submitted from Notes. Older identical questions remain baselined.
-      const pair = pairs[pairs.length - 1];
-      if (pair && noteQuestionKey(pair.question) === key) {
-        const fp = pairFingerprint(selectors.platform, state.convId, pair);
-        state.seen.delete(fp);
-        state.stats.delete(fp);
-        state.retryAfter.delete(fp);
-      }
-      schedule();
-    };
-
-    // A click from the Notes Ask helper uses the same protection as a
-    // user clicking Send in ChatGPT. Do not allow a normal reload to import
-    // an entire existing conversation.
+    // Explicit chat-page submissions are tracked as live intent; a normal
+    // reload must never import entire existing conversations.
     globalThis.TFCapture.markSubmittedQuestion = markSubmittedQuestion;
 
     // Restore before the very first scan, so an already-complete first
