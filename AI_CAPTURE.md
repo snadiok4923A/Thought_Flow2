@@ -1,3 +1,36 @@
+## Notes toolbar cleanup — v1.2.8 (November 28, 2026)
+
+The **Ask ChatGPT** button has been removed from the ThoughtFlow Notes
+toolbar at the user's request. Notes are now for direct manual editing and
+for displaying Q+A captured from chats on supported AI websites.
+
+- Removed the outbound Notes → ChatGPT request, progress indicator and
+  answer-return update in React.
+- Removed the corresponding extension bridge messages, background Ask job
+  manager and Ask-only content script.
+- The ordinary **AI chat → ThoughtFlow** live capture remains enabled;
+  its Q+A sends still use `TF_TRY_SEND` → `TF_CAPTURE_DIRECT` and the
+  Notes editor still has Bold, Italic, List and Zoom.
+- This change does not delete or modify any existing notes or nodes.
+- Old documentation below may discuss the retired Ask workflow as an
+  historical feature; those instructions no longer apply.
+
+Regression commands:
+
+```bash
+node chrome-extension/test/notes-outbound-removal.mjs
+node chrome-extension/test/live-only-no-history.mjs
+node chrome-extension/test/chatgpt-2026-search-unit-live.mjs
+node chrome-extension/test/universal-capture-pipeline.mjs
+```
+
+The local app updates after pulling `main` and refreshing Vite; the hosted
+GitHub Pages website must be rebuilt and deployed separately to remove the
+button from its compiled bundle. Reload the unpacked Chrome extension to
+v1.2.8 for the outbound message removal.
+
+---
+
 ## ChatGPT question-only notes ("ChatGPT said:") — Extension v1.2.7
 
 **Observed problem:** a new ChatGPT turn produced a node whose Notes were
